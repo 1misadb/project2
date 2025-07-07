@@ -1,6 +1,5 @@
 #pragma once
 #include <GL/glew.h>
-#include <GL/glui.h>
 #include "Picture.h"
 #include "imageProcessing.h"
 
@@ -30,7 +29,7 @@ extern int numberOfPolygons;
 extern GLfloat *blue;
 extern int tx, ty, tw, th;
 
-void buildStaticLayout();
+void buildStaticLayout(const char* outputFile);
 double calculateMaxLength();
 double calculateUsedArea(double maxLength);
 bool displayStatic(ofstream *myfile);
@@ -39,4 +38,4 @@ Point_2 dynamicPieceSelection();
 GLdouble *getPiecePosition(IplImage *layoutImg);
 void displayDynamic_drawCurrentLayout();
 bool displayDynamic(ofstream *myfile);
-void buildDynamicLayout();
+void buildDynamicLayout(const char* outputFile);

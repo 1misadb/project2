@@ -2,7 +2,6 @@
 
 #include <GL/glew.h>
 #include <GL/glut.h>
-#include <GL/glui.h>
 #include <iostream>
 #include <sstream>
 #include <iomanip>

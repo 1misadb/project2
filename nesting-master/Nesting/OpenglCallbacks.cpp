@@ -6,8 +6,8 @@ void reshapeCB(int w, int h)
     // set viewport to be the entire window
     //glViewport(0, 0, (GLsizei)w, (GLsizei)h);
 	
-	GLUI_Master.auto_set_viewport();
-	glutPostRedisplay();
+    glViewport(0, 0, (GLsizei)w, (GLsizei)h);
+    glutPostRedisplay();
 }
 
 void timerCB(int millisec)

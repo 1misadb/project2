@@ -1,12 +1,11 @@
 #include "algorithms.h"
+#include <GL/glut.h>
 
 
-void buildStaticLayout()
+void buildStaticLayout(const char* outputFile)
 {
-	ofstream myfile;
-	char filename[100];
-	sprintf(filename, "staticTests %s - %d.csv", problemName, staticHeuristic);
-	myfile.open (filename);
+        ofstream myfile;
+        myfile.open(outputFile);
 	myfile<<"Iteration; Placement time ; Updating time"<<endl;
 
 	clock_t begin=clock();
@@ -27,12 +26,10 @@ void buildStaticLayout()
 	myfile.close();
 }
 
-void buildDynamicLayout()
+void buildDynamicLayout(const char* outputFile)
 {
-	ofstream myfile;
-	char filename[100];
-	sprintf(filename, "dynamicTests %s.csv", problemName);
-	myfile.open (filename);
+        ofstream myfile;
+        myfile.open(outputFile);
 	myfile<<"Iteration; Placement time ; Updating time; Placed pieces; Avaliable types; Placed piece; Time positioning1;Time positioning2; Time drawing1; Time drawing2"<<endl;
 	//*myfile<<iteration<<";"<<placementTime<<";"<<updatingTime<<";"<<currentDrawingPolys.getPositions().size()<<";"<<drawingNFPsTest.size()<<";"<<placedPiece<<";"<<findPositioningTime<<";"<<addPlacementTime<<"; "<<drawLayoutsTime<<"; "<<savePBOTime<<";"<<endl;
 	
@@ -100,7 +97,9 @@ bool displayStatic(ofstream *myfile)
 	if(iteration == 0)
 	{
 		glDisable(GL_BLEND);
-		GLUI_Master.get_viewport_area( &tx, &ty, &tw, &th );
+                tx = ty = 0;
+                tw = glutGet(GLUT_WINDOW_WIDTH);
+                th = glutGet(GLUT_WINDOW_HEIGHT);
 		//blue=createColor(0.0,0.0,1.0,1.0);
 		piecesToPlace=layout.getQuantity();
 		/*
@@ -160,19 +159,19 @@ bool displayStatic(ofstream *myfile)
 	gluOrtho2D(layoutBB.getX(), layoutBB.getWidth(), layoutBB.getY(), layoutBB.getHeight());
 	glMatrixMode(GL_MODELVIEW);
 
-	//escolher a proxima peça
+	//escolher a proxima peÃ§a
 	Point_2 nextPiece;
 	int nextPolygonIndex;
 	GLdouble *nextPlacement;
 
-	//escolher uma peça e uma rotacao
+	//escolher uma peÃ§a e uma rotacao
 	nextPiece=*piecesOrdered.begin();
 	nextPolygonIndex=(int)nextPiece.x();
 
-	//procurar posição para essa peça
+	//procurar posiÃ§Ã£o para essa peÃ§a
 	clock_t begin=clock();
 	/*
-	//desenhar nfps dessa peça com o layout
+	//desenhar nfps dessa peÃ§a com o layout
 	glClear(GL_COLOR_BUFFER_BIT);
 	DrawingWithRotations *d=&currentDrawingNFPs[nextPiece];
 	glColor3f(0,0.0,1.0);
@@ -186,7 +185,7 @@ bool displayStatic(ofstream *myfile)
 	}
 	*/
 	
-	//desenhar os nfps dos outros poligonos para o layout com a nova peça adicionada
+	//desenhar os nfps dos outros poligonos para o layout com a nova peÃ§a adicionada
 	for(map<Point_2, DrawingWithRotations>::iterator itNFPsOfPiecesToPlaceIndex=currentDrawingNFPs.begin();
 		itNFPsOfPiecesToPlaceIndex != currentDrawingNFPs.end();
 		itNFPsOfPiecesToPlaceIndex++)
@@ -223,14 +222,14 @@ bool displayStatic(ofstream *myfile)
 	#endif
 		glBindBuffer(GL_PIXEL_PACK_BUFFER, previousBind);
 
-		//se for o pbo da peça que foi colocada, ler imagem para memoria
+		//se for o pbo da peÃ§a que foi colocada, ler imagem para memoria
 		if(itNFPsOfPiecesToPlaceIndex->first.x()==nextPiece.x() && itNFPsOfPiecesToPlaceIndex->first.y()==nextPiece.y())
 		{
 			//le PBO para openCV
 			glGetIntegerv(GL_PIXEL_UNPACK_BUFFER_BINDING, &previousBind);
 			glBindBuffer(GL_PIXEL_UNPACK_BUFFER, d->bufferObject);
 
-			//determinar a posicao da peça
+			//determinar a posicao da peÃ§a
 			IplImage *imgTest = cvCreateImage(cvSize(tw, th), IPL_DEPTH_8U, 1);
 			imgTest->imageData = (char*)glMapBuffer(GL_PIXEL_UNPACK_BUFFER, GL_READ_ONLY);
 
@@ -243,7 +242,7 @@ bool displayStatic(ofstream *myfile)
 
 			nextPlacement = getPiecePosition(imgTest);
 
-			//se nao for possivel colocar essa peça terminar
+			//se nao for possivel colocar essa peÃ§a terminar
 			if(nextPlacement==NULL)
 			{
 				layoutNFPsTest.clear();
@@ -269,7 +268,7 @@ bool displayStatic(ofstream *myfile)
 	
 	end=clock();
 	double timeUpdating=diffclock(end, begin);
-	//colocar a peça nos desenhos dos poligonos e dos nfps
+	//colocar a peÃ§a nos desenhos dos poligonos e dos nfps
 	currentDrawingPolys.addListPlacement(nextPiece.x(), nextPiece.y(), nextPlacement, blue);
 
 #ifdef DEBUG
@@ -286,7 +285,7 @@ bool displayStatic(ofstream *myfile)
 		itDrawing->second.addListPlacement(nextPiece.x(), nextPiece.y(), nextPlacement, blue);
 	}
 	
-	//apagar a peça da lista de peças a colocar
+	//apagar a peÃ§a da lista de peÃ§as a colocar
 	piecesOrdered.erase(piecesOrdered.begin());
 	if(piecesOrdered.empty()){
 		currentDrawingNFPs.clear();
@@ -534,7 +533,9 @@ void displayDynamic_drawCurrentLayout()
 	gluOrtho2D(layoutBB.getX(), layoutBB.getWidth(), layoutBB.getY(), layoutBB.getHeight());	// set to orthogonal projection
 	glMatrixMode(GL_MODELVIEW);			// switch to modelview matrix
 	
-	GLUI_Master.get_viewport_area( &tx, &ty, &tw, &th );
+        tx = ty = 0;
+        tw = glutGet(GLUT_WINDOW_WIDTH);
+        th = glutGet(GLUT_WINDOW_HEIGHT);
 
 	for(map<Point_2, DrawingWithRotations>::iterator itNFPsOfPiecesToPlaceIndex=currentDrawingNFPs.begin();
 		itNFPsOfPiecesToPlaceIndex != currentDrawingNFPs.end();
@@ -601,7 +602,9 @@ void displayDynamic_drawCurrentLayout()
 
 bool displayDynamic(ofstream *myfile)
 {
-	GLUI_Master.get_viewport_area( &tx, &ty, &tw, &th );
+        tx = ty = 0;
+        tw = glutGet(GLUT_WINDOW_WIDTH);
+        th = glutGet(GLUT_WINDOW_HEIGHT);
 	//cout<<"tw th "<<tw<<" "<<th<<endl;
 
 	int previousBind=0;
@@ -623,7 +626,7 @@ bool displayDynamic(ofstream *myfile)
 	drawLayoutsTime=0;
 	savePBOTime=0;
 
-	//experimentar colocar todas as peças
+	//experimentar colocar todas as peÃ§as
 	clock_t begin=clock();
 
 
@@ -640,7 +643,7 @@ bool displayDynamic(ofstream *myfile)
 		int polygonBeingTestedPiecesIndex=polygonRotationBeingTested.x();
 		int rotationBeingTestedPiecesIndex=polygonRotationBeingTested.y();
 
-		//determinar a posiçao da peça a experimentar
+		//determinar a posiÃ§ao da peÃ§a a experimentar
 		clock_t lala = clock();
 		GLdouble *position;
 		IplImage *imgTest = cvCreateImage(cvSize(tw, th), IPL_DEPTH_8U,1);
@@ -665,7 +668,7 @@ bool displayDynamic(ofstream *myfile)
 		clock_t lalala = clock();
 		findPositioningTime+=diffclock(lalala, lala);
 		
-		//se nao for possivel posicionar a peça, marca-la para nao a testar nas iteraçoes seguintes
+		//se nao for possivel posicionar a peÃ§a, marca-la para nao a testar nas iteraÃ§oes seguintes
 		if(position==0)
 		{
 			//cout<<"LE FU\n";
@@ -684,8 +687,8 @@ bool displayDynamic(ofstream *myfile)
 			}
 		}else 
 		{
-			//se for possivel posicionar a peça, desenhar as imagens dos nfps para todas as peças possiveis de colocar a seguir
-			//posicionar a peça no layout de teste das peças
+			//se for possivel posicionar a peÃ§a, desenhar as imagens dos nfps para todas as peÃ§as possiveis de colocar a seguir
+			//posicionar a peÃ§a no layout de teste das peÃ§as
 #ifdef DEBUG
 			cout<<"Position "<<position[0]<<" "<<position[1]<<endl;
 #endif
@@ -694,7 +697,7 @@ bool displayDynamic(ofstream *myfile)
 			//adiciona posicao ao layout
 			d->addListPlacement(polygonBeingTestedPiecesIndex, rotationBeingTestedPiecesIndex, position, blue);
 
-			//desenhar os nfps dos outros poligonos para o layout com a nova peça adicionada
+			//desenhar os nfps dos outros poligonos para o layout com a nova peÃ§a adicionada
 			for(map<Point_2, DrawingWithRotations>::iterator itDrawing = itPolygonBeingTestedIndex->second.begin(); 
 				itDrawing != itPolygonBeingTestedIndex->second.end();
 				itDrawing++)
@@ -767,7 +770,7 @@ bool displayDynamic(ofstream *myfile)
 			cvReleaseImage(&imgTest);
 	#endif
 			
-			//desenhar a preto as peças do layout
+			//desenhar a preto as peÃ§as do layout
 			//glClear(GL_DEPTH_BUFFER_BIT);
 			glColor3f(0.0,0.0,0.0);
 			for(int i=0; i < d->getPositions().size(); i++)
@@ -786,7 +789,7 @@ bool displayDynamic(ofstream *myfile)
 			cvReleaseImage(&imgTest);
 	#endif
 
-			//ler imagem da soma dos nfps com a diferença do espaço ocupado pelas peças 
+			//ler imagem da soma dos nfps com a diferenÃ§a do espaÃ§o ocupado pelas peÃ§as 
 			glReadBuffer(GL_BACK_LEFT);
 			glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &previousBind);
 			glBindBuffer(GL_PIXEL_PACK_BUFFER, layoutNFPsTest[polygonRotationBeingTested]);
@@ -798,7 +801,7 @@ bool displayDynamic(ofstream *myfile)
 	double placementTime = diffclock(end, begin);
 
 	begin = clock();
-	//apagar as peças que ja nao podem ser colocadas
+	//apagar as peÃ§as que ja nao podem ser colocadas
 	for(set<Point_2>::iterator it = pointsToDelete.begin(); it != pointsToDelete.end(); it++)
 	{
 		layoutNFPsTest.erase(*it);		//map<int, IplImage*>
@@ -807,7 +810,7 @@ bool displayDynamic(ofstream *myfile)
 		drawingPolysTest.erase(*it);	//map<int, Drawing>
 	}
 	
-	//apagar peças que ja nao podem ser colocadas das hipoteses dos layouts a ser testados
+	//apagar peÃ§as que ja nao podem ser colocadas das hipoteses dos layouts a ser testados
 	for(map<Point_2, map<Point_2, DrawingWithRotations>>::iterator it = drawingNFPsTest.begin(); it!= drawingNFPsTest.end(); it++)
 	{
 		for(set<Point_2>::iterator itd = pointsToDelete.begin(); itd != pointsToDelete.end(); itd++)

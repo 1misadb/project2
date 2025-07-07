@@ -1,52 +1,9 @@
 #include "PreProcessing.h"
 
-void solveCB(int dummy)
-{
-	//getData
-	updateSolvingConfiguration();
-
-	//loadProblem
-	string problemNameStr(problemName);
-	transform(problemNameStr.begin(), problemNameStr.end(), problemNameStr.begin(), ::tolower);
-
-	int delimiter = problemNameStr.find('.')+1;
-	string extension = problemNameStr.substr(delimiter, problemNameStr.size());
-
-
-	if(extension.compare("dat")==0)
-		layout = loadConfigurationFileIrregularProblem(problemName);
-	else
-		layout = loadLayout(problemName);
-
-	//pre process geometry
-	preProcessing();
-
-}
-
-void heuristicCB(int h_choosen)
-{
-	if(!radiogroup_heuristic->get_int_val())
-		radiogroup_staticheuristic->enable();
-	else
-		radiogroup_staticheuristic->disable();
-}
-
-void updateSolvingConfiguration()
-{
-	//problemName=(char*)edittext_file->get_text();
-	strcpy ( problemName, edittext_file->get_text().c_str());
-	saveAll=radiogroup_heuristic->get_int_val();
-	staticHeuristic=radiogroup_staticheuristic->get_int_val()+1;
-	//define nfps function
-	if(radiogroup_nfps->get_int_val()==0)
-		nfps = sortEdgesWithDecomposition;
-	else
-		nfps = minkowskiSumsWithDecompositionNoConversion;
-}
 
 void preProcessing()
 {
-	//NORMALIZAR peças e detectar largura e altura maximas
+	//NORMALIZAR peÃ§as e detectar largura e altura maximas
 	double maxPieceWidth=layout.getMaxWidth();
 	double maxPieceHeight=layout.getMaxHeight();
 	for(int i=0; i < layout.getPieces().size();i++)
@@ -54,7 +11,7 @@ void preProcessing()
 		/*BoundingBox pieceBB = layout.getPieces()[i].getBoundingBox();
 		maxPieceWidth = max(maxPieceWidth,pieceBB.getWidth());		//get max width
 		maxPieceHeight = max(maxPieceHeight,pieceBB.getHeight());	//get max height*/
-		layout.getPieces()[i].normalizeToOrigin();					//normalizar peças
+		layout.getPieces()[i].normalizeToOrigin();					//normalizar peÃ§as
 	}
 	//normalizar superficies
 	layout.getStockSheet()[0].normalizeToOrigin();
@@ -74,7 +31,7 @@ void preProcessing()
 
 	}
 	
-	//RODAR peças e calcular estatisticas
+	//RODAR peÃ§as e calcular estatisticas
 	numberOfPolygons=layout.getPieces().size();
 	int numberOfNFPs=numberOfPolygons+1;
 	nrOfRotations = 360/layout.getRotationStep();
@@ -91,7 +48,7 @@ void preProcessing()
 		polygons[i]=new Polygon_with_holes_2[nrOfRotations];
 		polygons[i][0]=piece2PolygonWithHoles(layout.getPieces()[i]);
 
-		//area da peça, area da convex hull, nr de vertices concavos
+		//area da peÃ§a, area da convex hull, nr de vertices concavos
 		int nrOfConcaveVertices = getNumberOfConcaveVertices(polygons[i][0].outer_boundary());
 		double a = polygons[i][0].outer_boundary().area();
 
@@ -112,7 +69,7 @@ void preProcessing()
 		double l = pBB.ymax()-pBB.ymin();
 		infos[Point_2(i,0)]=PolyInfo(w,l,a,rectangularity,concavity,nrOfConcaveVertices);
 
-		//rodar as peças e guardar rotaçoes
+		//rodar as peÃ§as e guardar rotaÃ§oes
 		for(int r=1; r <nrOfRotations; r++)
 		{
 			polygons[i][r] = generatePieceDiscreteRotation(polygons[i][0], angleRadians*r);
@@ -132,7 +89,7 @@ void preProcessing()
 
 	//DECOMPOSICAO
 
-	//decompor peças
+	//decompor peÃ§as
 	vector<Polygon_2>** polygonsDecompositions = decomposePiecesAngBis (polygons, numberOfPolygons, nrOfRotations);
 	
 	//decompor stock sheets
@@ -264,7 +221,7 @@ void preProcessing()
 	cout<<"Window Dimensions: "<<w<<" "<<h<<endl;
 	cout<<"Resolution: "<<layout.getResolution()<<endl;
 	
-	//inicializar poedeira de peças
+	//inicializar poedeira de peÃ§as
 	if(saveAll)
 		putPieceDynamic(true);
 }
@@ -324,7 +281,7 @@ void preProcessingStatic(int nrOfRotations, map<Point_2, PolyInfo> infos)
 		case LARGER:
 			for(int p=0; p < numberOfPolygons; p++)
 			{
-				Point_2 best(p, 0);	//ver qual das rotaçoes e a melhor (a que tiver a dimensao mais estreita na direccao da dimensao mais larga da stock sheet)
+				Point_2 best(p, 0);	//ver qual das rotaÃ§oes e a melhor (a que tiver a dimensao mais estreita na direccao da dimensao mais larga da stock sheet)
 						
 				for(int r=1; r < nrOfRotations; r++)
 				{
@@ -341,7 +298,7 @@ void preProcessingStatic(int nrOfRotations, map<Point_2, PolyInfo> infos)
 						best = currentP;
 					}
 				}
-				list<Point_2>::iterator j=piecesOrdered.begin();	//introduzir n vezes essa peça com essa rotacao na lista, ordenada por areas
+				list<Point_2>::iterator j=piecesOrdered.begin();	//introduzir n vezes essa peÃ§a com essa rotacao na lista, ordenada por areas
 				for(;	j != piecesOrdered.end() && infos[*j].area > infos[best].area; j++);
 				for(int c=0; c < layout.getQuantity()[p]; c++)
 					j=piecesOrdered.insert(j, best);
@@ -351,7 +308,7 @@ void preProcessingStatic(int nrOfRotations, map<Point_2, PolyInfo> infos)
 		case MORE_IRREGULAR:
 			for(int p=0; p < numberOfPolygons; p++)
 			{
-				Point_2 best(p, 0);	//ver qual das rotaçoes e a melhor (a que tiver a dimensao mais larga na direccao da dimensao mais larga da stock sheet)
+				Point_2 best(p, 0);	//ver qual das rotaÃ§oes e a melhor (a que tiver a dimensao mais larga na direccao da dimensao mais larga da stock sheet)
 				for(int r=1; r < nrOfRotations; r++)
 				{
 					Point_2 currentP(p,r);
@@ -365,7 +322,7 @@ void preProcessingStatic(int nrOfRotations, map<Point_2, PolyInfo> infos)
 						best = currentP;
 					}
 				}
-				list<Point_2>::iterator j=piecesOrdered.begin();	//introduzir n vezes essa peça com essa rotacao na lista, ordenada por areas
+				list<Point_2>::iterator j=piecesOrdered.begin();	//introduzir n vezes essa peÃ§a com essa rotacao na lista, ordenada por areas
 				for(;	j != piecesOrdered.end() && infos[*j].concavity > infos[best].concavity; j++);
 				for(int c=0; c < layout.getQuantity()[p]; c++)
 					j=piecesOrdered.insert(j, best);
@@ -375,7 +332,7 @@ void preProcessingStatic(int nrOfRotations, map<Point_2, PolyInfo> infos)
 		case MORE_RECTANGULAR:
 			for(int p=0; p < numberOfPolygons; p++)
 			{
-				Point_2 best(p, 0);	//ver qual das rotaçoes e a melhor (a que tiver a dimensao mais larga na direccao da dimensao mais larga da stock sheet)
+				Point_2 best(p, 0);	//ver qual das rotaÃ§oes e a melhor (a que tiver a dimensao mais larga na direccao da dimensao mais larga da stock sheet)
 				for(int r=1; r < nrOfRotations; r++)
 				{
 					Point_2 currentP(p,r);
@@ -389,7 +346,7 @@ void preProcessingStatic(int nrOfRotations, map<Point_2, PolyInfo> infos)
 							best = currentP;
 					}
 				}
-				list<Point_2>::iterator j=piecesOrdered.begin();	//introduzir n vezes essa peça com essa rotacao na lista, ordenada por areas
+				list<Point_2>::iterator j=piecesOrdered.begin();	//introduzir n vezes essa peÃ§a com essa rotacao na lista, ordenada por areas
 				for(;	j != piecesOrdered.end() && infos[*j].rectangularity > infos[best].rectangularity; j++);
 				for(int c=0; c < layout.getQuantity()[p]; c++)
 					j=piecesOrdered.insert(j, best);
@@ -399,7 +356,7 @@ void preProcessingStatic(int nrOfRotations, map<Point_2, PolyInfo> infos)
 		case RANDOM:
 			while(!piecesToPlace.empty())
 			{
-				//escolher peça
+				//escolher peÃ§a
 				int pieceIndex = rand()%piecesToPlace.size();
 				int piece;
 				map<int, int>::iterator it = piecesToPlace.begin();
@@ -414,7 +371,7 @@ void preProcessingStatic(int nrOfRotations, map<Point_2, PolyInfo> infos)
 
 				//decrementar quantidade
 				if(--it->second == 0)
-					piecesToPlace.erase(it);	//se ja nao houver peças desse tipo apagar peça do mapa
+					piecesToPlace.erase(it);	//se ja nao houver peÃ§as desse tipo apagar peÃ§a do mapa
 			}
 		break;
 

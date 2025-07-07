@@ -83,11 +83,11 @@
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
-      <AdditionalIncludeDirectories>..\..\glui\include;..\Dependencies\glew-2.1.0\include;..\Dependencies\freeglut-3.4.0\include;..\Dependencies\CGAL-5.6\include;..\Dependencies\boost_1_83_0;..\Dependencies\opencv\build\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\...\Dependencies\glew-2.1.0\include;..\Dependencies\freeglut-3.4.0\include;..\Dependencies\CGAL-5.6\include;..\Dependencies\boost_1_83_0;..\Dependencies\opencv\build\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>glew32.lib;glew32s.lib;glui32d.lib;opencv_imgproc249d.lib;opencv_highgui249d.lib;opencv_core249d.lib;freeglutd.lib;CGAL-vc100-mt-gd.lib;libboost_thread-vc100-mt-gd-1_56.lib;%(AdditionalDependencies);glew32.lib;glew32s.lib</AdditionalDependencies>
+      <AdditionalDependencies>glew32.lib;glew32s.lib;opencv_imgproc249d.lib;opencv_highgui249d.lib;opencv_core249d.lib;freeglutd.lib;CGAL-vc100-mt-gd.lib;libboost_thread-vc100-mt-gd-1_56.lib;%(AdditionalDependencies);glew32.lib;glew32s.lib</AdditionalDependencies>
       <AdditionalLibraryDirectories>..\Dependencies\freeglut-3.4.0\build_x64\lib\Debug;</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
@@ -95,12 +95,12 @@
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
-      <AdditionalIncludeDirectories>$(ProjectDir)glui\include;$(ProjectDir)Dependencies\glew-2.1.0\include;$(ProjectDir)Dependencies\freeglut-3.4.0\include;$(ProjectDir)Dependencies\CGAL-5.6\include;$(ProjectDir)Dependencies\boost_1_83_0;$(ProjectDir)Dependencies\opencv\build\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)$(ProjectDir)Dependencies\glew-2.1.0\include;$(ProjectDir)Dependencies\freeglut-3.4.0\include;$(ProjectDir)Dependencies\CGAL-5.6\include;$(ProjectDir)Dependencies\boost_1_83_0;$(ProjectDir)Dependencies\opencv\build\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>glui32.lib;freeglut.lib;glew32.lib;opengl32.lib;glu32.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <AdditionalLibraryDirectories>$(ProjectDir)glui\msvc\build_x64\Debug;$(ProjectDir)Dependencies\freeglut-3.4.0\build_x64\lib\Debug;$(ProjectDir)Dependencies\glew-2.1.0\lib\Release\x64;$(ProjectDir)Dependencies\opencv\build\x64\vc16\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>freeglut.lib;glew32.lib;opengl32.lib;glu32.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(ProjectDir)$(ProjectDir)Dependencies\freeglut-3.4.0\build_x64\lib\Debug;$(ProjectDir)Dependencies\glew-2.1.0\lib\Release\x64;$(ProjectDir)Dependencies\opencv\build\x64\vc16\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
@@ -109,7 +109,7 @@
       <Optimization>MaxSpeed</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <AdditionalIncludeDirectories>..\..\glui\include;..\Dependencies\glew-2.1.0\include;..\Dependencies\freeglut-3.4.0\include;..\Dependencies\CGAL-5.6\include;..\Dependencies\boost_1_83_0;..\Dependencies\opencv\build\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\...\Dependencies\glew-2.1.0\include;..\Dependencies\freeglut-3.4.0\include;..\Dependencies\CGAL-5.6\include;..\Dependencies\boost_1_83_0;..\Dependencies\opencv\build\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <GenerateDebugInformation>true</GenerateDebugInformation>
@@ -125,14 +125,14 @@
       <Optimization>MaxSpeed</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <AdditionalIncludeDirectories>..\..\Dependencies\glui\include;..\..\Dependencies\glew-2.1.0\include;..\..\Dependencies\freeglut-3.4.0\include;..\..\Dependencies\CGAL-5.6\include;..\..\Dependencies\boost_1_83_0;..\..\Dependencies\opencv\build\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\..\Dependencies..\..\Dependencies\glew-2.1.0\include;..\..\Dependencies\freeglut-3.4.0\include;..\..\Dependencies\CGAL-5.6\include;..\..\Dependencies\boost_1_83_0;..\..\Dependencies\opencv\build\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
-      <AdditionalLibraryDirectories>..\..\Dependencies\glui\build_x64\Release;..\..\Dependencies\freeglut-3.4.0\build_x64\lib\Release;..\..\Dependencies\freeglut-3.4.0\build_x64\lib\Debug;..\..\Dependencies\glew-2.1.0\lib\Release\x64;..\..\Dependencies\opencv\build\x64\vc16\lib</AdditionalLibraryDirectories>
-      <AdditionalDependencies>glui_static.lib;freeglut.lib;glew32.lib;opencv_world480.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>..\..\Dependencies..\..\Dependencies\freeglut-3.4.0\build_x64\lib\Release;..\..\Dependencies\freeglut-3.4.0\build_x64\lib\Debug;..\..\Dependencies\glew-2.1.0\lib\Release\x64;..\..\Dependencies\opencv\build\x64\vc16\lib</AdditionalLibraryDirectories>
+      <AdditionalDependencies>freeglut.lib;glew32.lib;opencv_world480.lib</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>

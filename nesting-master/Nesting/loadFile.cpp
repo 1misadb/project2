@@ -33,10 +33,16 @@ vector<string> loadConfigurationFile(char* filename)
 	string piecesFile, piecesFormat, stockSheetFile, stockSheetFormat, rotationStep, resolution, margin;
 
 	vector<string> parameters;
-	char filePath[1024] = "problems/";
-	strcat(filePath, filename);
-
-	ifstream file (filePath);
+	ifstream file(filename);
+        if(!file.is_open()) {
+                char filePath[1024] = "problems/";
+                strcat(filePath, filename);
+                file.open(filePath);
+        }
+        if(!file.is_open()) {
+                cerr << "Unable to open file " << filename << endl;
+                exit(EXIT_FAILURE);
+        }
 	//get pieces file
 	getFirstNonEmptyLine(&file, &piecesFile);
 	getFirstNonEmptyLine(&file, &piecesFile);
@@ -70,10 +76,16 @@ Problem loadFile(char* filename, bool mode)
 {
 	string line;
 
-	char filePath[1024] = "problems/";
-	strcat(filePath, filename);
-
-	ifstream file(filePath);
+	ifstream file(filename);
+        if(!file.is_open()) {
+                char filePath[1024] = "problems/";
+                strcat(filePath, filename);
+                file.open(filePath);
+        }
+        if(!file.is_open()) {
+                cerr << "Unable to open file " << filename << endl;
+                exit(EXIT_FAILURE);
+        }
 	Problem problem;
 
 	if (file.is_open())
@@ -141,11 +153,16 @@ Problem loadFile(char* filename, bool mode)
 				//adiciona componente a peca
 				current_piece.addComponent(current_component);
 			}
-			problem.addPiece(current_piece, quantity); //adiciona peça ao problema
-		}
-		file.close();
-		if(quantity==0)	problem.popPiece();
-	}
+	ifstream file(filename);
+        if(!file.is_open()) {
+                char filePath[1024] = "problems/";
+                strcat(filePath, filename);
+                file.open(filePath);
+        }
+        if(!file.is_open()) {
+                cerr << "Unable to open file " << filename << endl;
+                exit(EXIT_FAILURE);
+        }
 	else cout << "Unable to open file "<<filename<<endl; 
 	return problem;
 }
@@ -219,10 +236,16 @@ Layout loadConfigurationFileIrregularProblem(char* filename)
 Piece loadPieceFileIrregularProblem(char* filename)
 {
 	string line;
-	char filePath[1024] = "problems/";
-	strcat(filePath, filename);
-
-	ifstream file(filePath);
+	ifstream file(filename);
+        if(!file.is_open()) {
+                char filePath[1024] = "problems/";
+                strcat(filePath, filename);
+                file.open(filePath);
+        }
+        if(!file.is_open()) {
+                cerr << "Unable to open file " << filename << endl;
+                exit(EXIT_FAILURE);
+        }
 	
 	getFirstNonEmptyLine(&file, &line);
 	getFirstNonEmptyLine(&file, &line); //ignorar barycentro

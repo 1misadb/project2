@@ -3,6 +3,14 @@
 
 void preProcessing()
 {
+        if(layout.getStockSheet().empty()) {
+                std::cerr << "No stock sheet loaded" << std::endl;
+                exit(EXIT_FAILURE);
+        }
+        if(layout.getPieces().empty()) {
+                std::cerr << "No pieces loaded" << std::endl;
+                exit(EXIT_FAILURE);
+        }
 	//NORMALIZAR peças e detectar largura e altura maximas
 	double maxPieceWidth=layout.getMaxWidth();
 	double maxPieceHeight=layout.getMaxHeight();

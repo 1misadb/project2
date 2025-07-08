@@ -18,6 +18,7 @@ DrawingWithRotations::~DrawingWithRotations(){}
 
 int DrawingWithRotations::addDisplayList(int polygon, int rotation, int dl, BoundingBox bb)
 {
+        if(displayLists.empty() || displayLists[0].empty()) return -1;
 	if(displayLists.size()<=polygon || polygon<0 || displayLists[0].size()<=rotation || rotation<0 )
 	{
 		cout<<"Poligono ou rotacao invalida! Poligono([0,"<<displayLists.size()<<"]): "<<polygon<<". Rotacao([0, "<<displayLists[0].size()<<"]): "<<rotation<<"."<<endl;
@@ -75,6 +76,8 @@ BoundingBox DrawingWithRotations::getViewPort(){
 }
 
 void DrawingWithRotations::setPiecesPositions(vector<GLdouble*> pos, vector<pair<int, int>> ord){
+        if(displayLists.empty() || displayLists[0].empty())
+                throw std::runtime_error("Display lists not initialized");
 	if(pos.size() == ord.size())
 	{
 		int i;
@@ -89,7 +92,7 @@ void DrawingWithRotations::setPiecesPositions(vector<GLdouble*> pos, vector<pair
 }
 
 void DrawingWithRotations::addDisplayListsFromPolygonVector(vector<Polygon_2> **polys, int size1, int size2, int (*generateDisplayList) (vector<Polygon_2>)){
-	if(size1!=displayLists.size() || size2!=displayLists[0].size()){
+        if(displayLists.empty() || displayLists[0].empty() || size1!=displayLists.size() || size2!=displayLists[0].size()){
 		cout<<"Array dimensions should be "<<displayLists.size()<<", "<<displayLists[0].size()<<" instead of "<<size1<<", "<<size2<<"."<<endl;
 		return;
 	}
@@ -103,7 +106,7 @@ void DrawingWithRotations::addDisplayListsFromPolygonVector(vector<Polygon_2> **
 }
 
 void DrawingWithRotations::addNFPsDisplayListsFromPolygonVector(vector<Polygon_2> **polys, int size1, int size2, int (*generateDisplayList) (vector<Polygon_2>)){
-	if(size1!=displayLists.size() || size2!=displayLists[0].size()){
+        if(displayLists.empty() || displayLists[0].empty() || size1!=displayLists.size() || size2!=displayLists[0].size()){
 		cout<<"Array dimensions should be "<<displayLists.size()<<", "<<displayLists[0].size()<<" instead of "<<size1<<", "<<size2<<"."<<endl;
 		return;
 	}
@@ -116,7 +119,7 @@ void DrawingWithRotations::addNFPsDisplayListsFromPolygonVector(vector<Polygon_2
 }
 
 void DrawingWithRotations::addDisplayListsFromPolygonVector(Polygon_with_holes_2 **polys, int size1, int size2, int (*generateDisplayList) (Polygon_with_holes_2)){
-	if(size1!=displayLists.size() || size2!=displayLists[0].size()){
+        if(displayLists.empty() || displayLists[0].empty() || size1!=displayLists.size() || size2!=displayLists[0].size()){
 		cout<<"Array dimensions should be "<<displayLists.size()<<", "<<displayLists[0].size()<<" instead of "<<size1<<", "<<size2<<"."<<endl;
 		return;
 	}
@@ -149,7 +152,7 @@ BoundingBox DrawingWithRotations::generateGridPositions(){
 	double x=0;
 	double y=0;
 	
-	if(displayLists.empty())
+	if(displayLists.empty() || displayLists[0].empty())
 		throw exception();
 	resetPlacements();
 	

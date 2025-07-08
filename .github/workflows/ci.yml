@@ -19,8 +19,8 @@ jobs:
       uses: microsoft/setup-msbuild@v1.1
 
     - name: Build with MSBuild
-      run: |
-        msbuild Nesting.sln /p:Configuration=Release
+      run: msbuild nesting-master/Nesting.sln /p:Configuration=Release
+
 
     - name: Upload exe artifact
       uses: actions/upload-artifact@v4
@@ -41,7 +41,7 @@ jobs:
       run: sudo apt update && sudo apt install -y build-essential cmake
 
     - name: Configure with CMake
-      run: cmake -S . -B build
+      run: cmake -S nesting-master -B build
 
     - name: Build
       run: cmake --build build --config Release

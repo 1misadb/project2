@@ -112,10 +112,10 @@ the four vertices that define the two segments that are intersecting.
 #ifndef CLIPPER2_EXPORT_H
 #define CLIPPER2_EXPORT_H
 
-#include "clipper2/clipper.core.h"
-#include "clipper2/clipper.engine.h"
-#include "clipper2/clipper.offset.h"
-#include "clipper2/clipper.rectclip.h"
+#include "clipper.core.h"
+#include "clipper.engine.h"
+#include "clipper.offset.h"
+#include "clipper.rectclip.h"
 #include <cstdlib>
 
 namespace Clipper2Lib {

@@ -10,7 +10,7 @@
 #ifndef CLIPPER_ENGINE_H
 #define CLIPPER_ENGINE_H
 
-#include "clipper2/clipper.core.h"
+#include "clipper.core.h"
 #include <queue>
 #include <functional>
 #include <memory>

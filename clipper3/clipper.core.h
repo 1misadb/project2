@@ -10,7 +10,7 @@
 #ifndef CLIPPER_CORE_H
 #define CLIPPER_CORE_H
 
-#include "clipper2/clipper.version.h"
+#include "clipper.version.h"
 #include <cstdint>
 #include <vector>
 #include <string>

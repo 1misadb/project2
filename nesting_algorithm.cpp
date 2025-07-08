@@ -31,8 +31,19 @@ using namespace Clipper2Lib;
 
 // ───────── helpers ─────────
 constexpr double SCALE = 1000.0;              // мм → int64
+constexpr int    DEFAULT_ROT_STEP = 10;
 inline int64_t I64(double v){ return llround(v * SCALE); }
 inline double  Dbl(int64_t v){ return double(v) / SCALE; }
+
+// Reverse polygon orientation in place
+
+// Reverse polygon orientation
+template <typename T>
+void ReversePath(std::vector<T>& p){
+    std::reverse(p.begin(), p.end());
+}
+
+// Compute bounding box of multiple polygons
 
 static Rect64 getBBox(const Paths64& P){
     Rect64 r{INT64_MAX,INT64_MAX,INT64_MIN,INT64_MIN};
@@ -45,17 +56,22 @@ static Rect64 getBBox(const Paths64& P){
     return r;
 }
 
+// Union all rings to simplify part geometry
+// Merge all polygons in a set
 static Paths64 unionAll(const Paths64& in){
-    return Union(in, FillRule::NonZero, 1.0);   
+    return Union(in, FillRule::NonZero);
 }
 
+// Test for polygon overlap
+
 static bool overlap(const Paths64&a,const Paths64&b){
-    return !Intersect(a,b,FillRule::NonZero,1.0).empty();
+    return !Intersect(a,b,FillRule::NonZero).empty();
 }
 
 // ───────── DXF mini loader ─────────
 struct RawPart{ Paths64 rings; double area=0; int id=0; };
 
+// Parse minimal DXF (LWPOLYLINE only) into polygons
 static std::vector<RawPart> loadDXF(const std::vector<std::string>& files){
     std::vector<RawPart> parts;
     for(size_t idx=0; idx<files.size(); ++idx){
@@ -87,6 +103,7 @@ static std::vector<RawPart> loadDXF(const std::vector<std::string>& files){
 // ───────── orientations ─────────
 struct Orient{ Paths64 poly; Rect64 bb; int id; int ang; };
 
+// Rotate polygon set using sine and cosine
 static Paths64 rot(const Paths64&src,double s,double c){
     Paths64 out; out.reserve(src.size());
     for(const auto&ring:src){ Path64 r; r.reserve(ring.size());
@@ -96,6 +113,7 @@ static Paths64 rot(const Paths64&src,double s,double c){
     return out;
 }
 
+// Precompute rotated variants for each part
 static std::vector<std::vector<Orient>> makeOrient(const std::vector<RawPart>&parts,int step){
     std::vector<std::vector<Orient>> all;
     for(const auto &p:parts){ std::vector<Orient> ovec;
@@ -107,18 +125,32 @@ static std::vector<std::vector<Orient>> makeOrient(const std::vector<RawPart>&pa
 
 // ───────── NFP cache ─────────
 using Key=uint64_t; static std::unordered_map<Key,Paths64> NFP;
-static Key kfn(int a,int ra,int b,int rb){return ((uint64_t)a<<48)^((uint64_t)ra<<32)^((uint64_t)b<<16)^rb;}
-static const Paths64& nfp(const Orient&A,const Orient&B){
-    Key k=kfn(A.id,A.ang,B.id,B.ang); auto it=NFP.find(k); if(it!=NFP.end()) return it->second;
-    return NFP[k]=MinkowskiSum(A.poly[0],B.poly);  
+static Key kfn(int a, int ra, int b, int rb){
+    return ((uint64_t)a<<48)^((uint64_t)ra<<32)^((uint64_t)b<<16)^rb;
+}
+
+// Calculate and cache no-fit polygon (NFP) for oriented parts
+static const Paths64& nfp(const Orient& A, const Orient& B){
+    Key k = kfn(A.id, A.ang, B.id, B.ang);
+    auto it = NFP.find(k);
+    if (it != NFP.end())
+        return it->second;
+    return NFP[k] = MinkowskiSum(A.poly[0], B.poly[0], true);
+}
 
 // ───────── greedy placer ─────────
+// Place a set of parts onto the sheet using a simple greedy algorithm
 struct Place{int id; double x,y; int ang;};
 
 static std::vector<Place> greedy(const std::vector<RawPart>&parts,double W,double H,int step){
     auto ord=parts; std::sort(ord.begin(),ord.end(),[](auto&a,auto&b){return a.area>b.area;});
     auto orient=makeOrient(ord,step);
-    Path64 sheet={{0,0},{I64(W),0},{I64(W),I64(H)},{0,I64(H)}};
+    Path64 sheet;
+    sheet.reserve(4);
+    sheet.emplace_back(int64_t(0), int64_t(0));
+    sheet.emplace_back(I64(W), int64_t(0));
+    sheet.emplace_back(I64(W), I64(H));
+    sheet.emplace_back(int64_t(0), I64(H));
     std::vector<Paths64> placed; std::vector<Place> out;
     for(size_t i=0;i<ord.size();++i){ bool ok=false; Place best{};
         for(auto &op:orient[i]){
@@ -135,11 +167,56 @@ static std::vector<Place> greedy(const std::vector<RawPart>&parts,double W,doubl
 }
 
 // ───────── CLI ─────────
-struct CLI{double W=0,H=0;int rot=10;std::string out="layout.csv";std::vector<std::string> files;};
-static CLI parse(int ac,char**av){CLI c;for(int i=1;i<ac;++i){std::string a=av[i];if(a=="-s"||a=="--sheet"){auto s=std::string(av[++i]);auto x=s.find('x');c.W=std::stod(s.substr(0,x));c.H=std::stod(s.substr(x+1));}else if(a=="-r"||a=="--rot") c.rot=std::stoi(av[++i]); else if(a=="-o"||a=="--out") c.out=av[++i]; else c.files.push_back(a);} if(c.W==0||c.H==0||c.files.empty()) throw std::runtime_error("usage: nest -s WxH [-r 10] *.dxf -o out"); return c;}
+struct CLI{
+    double W = 0, H = 0;
+    int rot = DEFAULT_ROT_STEP;
+    std::string out = "layout.csv";
+    std::vector<std::string> files;
+};
+
+// Display usage information
+static void printHelp(const char* exe){
+    std::cout << "Usage: " << exe << " -s WxH [options] files...\n"
+              << "Options:\n"
+              << "  -s, --sheet WxH    Sheet size in mm\n"
+              << "  -r, --rot N       Rotation step in degrees (default 10)\n"
+              << "  -o, --out FILE    Output CSV file (default layout.csv)\n"
+              << "  -h, --help        Show this help message\n";
+}
+
+// Parse command line arguments
+static CLI parse(int ac, char** av){
+    CLI c;
+    for(int i=1;i<ac;++i){
+        std::string a = av[i];
+        if(a=="-h"||a=="--help"){ printHelp(av[0]); std::exit(0); }
+        else if(a=="-s"||a=="--sheet"){
+            if(i+1>=ac) throw std::runtime_error("missing value for --sheet");
+            std::string s = av[++i]; auto x = s.find('x');
+            if(x==std::string::npos) throw std::runtime_error("sheet format WxH");
+            c.W = std::stod(s.substr(0,x));
+            c.H = std::stod(s.substr(x+1));
+        }else if(a=="-r"||a=="--rot"){
+            if(i+1>=ac) throw std::runtime_error("missing value for --rot");
+            c.rot = std::stoi(av[++i]);
+        }else if(a=="-o"||a=="--out"){
+            if(i+1>=ac) throw std::runtime_error("missing value for --out");
+            c.out = av[++i];
+        }else if(a.size() && a[0]=='-'){
+            throw std::runtime_error("unknown option " + a);
+        }else{
+            c.files.push_back(a);
+        }
+    }
+    if(c.W<=0 || c.H<=0 || c.files.empty())
+        throw std::runtime_error("use --help for usage");
+    return c;
+}
 
 // ───────── main ─────────
-int main(int argc,char*argv[]){ try{
+// Entry point
+int main(int argc,char*argv[]){
+    try{
         auto cli=parse(argc,argv);
         auto parts=loadDXF(cli.files);
         auto placed=greedy(parts,cli.W,cli.H,cli.rot);

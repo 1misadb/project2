@@ -59,6 +59,10 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    std::cout << "==== CLI Nesting started ====\n";
+    std::cout << "Input file: " << argv[1] << "\n";
+    std::cout << "Output file: " << argv[2] << "\n";
+
     std::strncpy(problemName, argv[1], sizeof(problemName) - 1);
     problemName[sizeof(problemName) - 1] = '\0';
     const char* outputFile = argv[2];
@@ -68,8 +72,10 @@ int main(int argc, char** argv) {
     staticHeuristic = WIDER;   // default static heuristic
     nfps = sortEdgesWithDecomposition;
 
+    std::cout << "[1] Initializing shared memory...\n";
     initSharedMem();
 
+    std::cout << "[2] Initializing OpenGL context...\n";
     glutInit(&argc, argv);
     glutInitDisplayMode(GLUT_RGB | GLUT_DOUBLE | GLUT_DEPTH | GLUT_STENCIL);
     glutInitWindowSize(500, 200);
@@ -81,6 +87,7 @@ int main(int argc, char** argv) {
     }
     initGL();
 
+    std::cout << "[3] Loading layout...\n";
     std::string inFile(problemName);
     std::transform(inFile.begin(), inFile.end(), inFile.begin(), ::tolower);
     if (inFile.rfind(".dat") != std::string::npos)
@@ -88,13 +95,21 @@ int main(int argc, char** argv) {
     else
         layout = loadLayout(problemName);
 
+    std::cout << "[4] Preprocessing...\n";
     preProcessing();
 
-    if (saveAll)
+    std::cout << "[5] Building layout...\n";
+    if (saveAll) {
+        std::cout << "[5.1] Using dynamic algorithm\n";
         buildDynamicLayout(outputFile);
-    else
+    } else {
+        std::cout << "[5.2] Using static algorithm\n";
         buildStaticLayout(outputFile);
+    }
 
+    std::cout << "[6] Clearing shared memory...\n";
     clearSharedMem();
+
+    std::cout << "==== Nesting complete. Output saved to: " << outputFile << " ====\n";
     return 0;
 }

@@ -95,12 +95,14 @@
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
-      <AdditionalIncludeDirectories>$(ProjectDir)$(ProjectDir)Dependencies\glew-2.1.0\include;$(ProjectDir)Dependencies\freeglut-3.4.0\include;$(ProjectDir)Dependencies\CGAL-5.6\include;$(ProjectDir)Dependencies\boost_1_83_0;$(ProjectDir)Dependencies\opencv\build\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)$(ProjectDir)Dependencies\glew-2.1.0\include;$(ProjectDir)Dependencies\freeglut-3.4.0\include;$(ProjectDir)Dependencies\CGAL-5.6\include;$(ProjectDir)Dependencies\boost_1_83_0;C:\Users\User\vcpkg\installed\x64-windows\include\opencv4;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalDependencies>freeglut.lib;glew32.lib;opengl32.lib;glu32.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <AdditionalLibraryDirectories>$(ProjectDir)$(ProjectDir)Dependencies\freeglut-3.4.0\build_x64\lib\Debug;$(ProjectDir)Dependencies\glew-2.1.0\lib\Release\x64;$(ProjectDir)Dependencies\opencv\build\x64\vc16\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>$(ProjectDir)$(ProjectDir)Dependencies\freeglut-3.4.0\build_x64\lib\Debug;$(ProjectDir)Dependencies\glew-2.1.0\lib\Release\x64;C:\Users\User\vcpkg\installed\x64-windows\lib;C:\Users\User\nesting-cli-test\nesting-master\Nesting;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <SubSystem>Console</SubSystem>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">

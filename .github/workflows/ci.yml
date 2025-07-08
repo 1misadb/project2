@@ -23,7 +23,7 @@ jobs:
         msbuild Nesting.sln /p:Configuration=Release
 
     - name: Upload exe artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: Nesting-windows
         path: |
@@ -50,7 +50,7 @@ jobs:
       run: cd build && ctest -C Release
 
     - name: Upload linux artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: Nesting-linux
         path: build/Nesting

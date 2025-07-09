@@ -71,28 +71,116 @@ static bool overlap(const Paths64&a,const Paths64&b){
 // ───────── DXF mini loader ─────────
 struct RawPart{ Paths64 rings; double area=0; int id=0; };
 
-// Parse minimal DXF (LWPOLYLINE only) into polygons
+// Geometry helpers ------------------------------------------------------
+
+// Approximate circular arc in degrees
+static Path64 approxArc(PointD c,double r,double a1,double a2,double step=5.0){
+    if(a2<a1) a2+=360.0; int seg=std::max(1,int(std::ceil((a2-a1)/step)));
+    Path64 p; p.reserve(seg+1);
+    for(int i=0;i<=seg;++i){ double ang=(a1+(a2-a1)*i/seg)*M_PI/180.0;
+        p.push_back({I64(c.x+r*std::cos(ang)),I64(c.y+r*std::sin(ang))}); }
+    return p;
+}
+
+// Approximate ellipse arc using major axis and ratio
+static Path64 approxEllipse(PointD c,PointD maj,double ratio,double a1,double a2,double step=5.0){
+    double ml=std::hypot(maj.x,maj.y); if(ml==0) return {};
+    PointD u{maj.x/ml,maj.y/ml}; double b=ml*ratio;
+    if(a2<a1) a2+=360.0; int seg=std::max(1,int(std::ceil((a2-a1)/step)));
+    Path64 p; p.reserve(seg+1);
+    for(int i=0;i<=seg;++i){ double ang=(a1+(a2-a1)*i/seg)*M_PI/180.0; double ca=std::cos(ang),sa=std::sin(ang);
+        double x=c.x+maj.x*ca - b*u.y*sa; double y=c.y+maj.y*ca + b*u.x*sa;
+        p.push_back({I64(x),I64(y)}); }
+    return p;
+}
+
+// Simple Catmull-Rom spline approximation for SPLINE fit points
+static Path64 approxSpline(const std::vector<PointD>& pts,int segPer=8){
+    if(pts.size()<2) return {};
+    Path64 out; auto CR=[&](const PointD&p0,const PointD&p1,const PointD&p2,const PointD&p3,double t){
+        double t2=t*t,t3=t2*t; return PointD{
+            0.5*((2*p1.x)+(-p0.x+p2.x)*t+(2*p0.x-5*p1.x+4*p2.x-p3.x)*t2+(-p0.x+3*p1.x-3*p2.x+p3.x)*t3),
+            0.5*((2*p1.y)+(-p0.y+p2.y)*t+(2*p0.y-5*p1.y+4*p2.y-p3.y)*t2+(-p0.y+3*p1.y-3*p2.y+p3.y)*t3)}; };
+    for(size_t i=0;i<pts.size()-1;++i){
+        PointD p0=i?pts[i-1]:pts[i], p1=pts[i], p2=pts[i+1], p3=(i+2<pts.size()?pts[i+2]:pts[i+1]);
+        for(int s=0;s<segPer;++s){ double t=double(s)/segPer; auto p=CR(p0,p1,p2,p3,t); out.push_back({I64(p.x),I64(p.y)}); }
+    }
+    out.push_back({I64(pts.back().x),I64(pts.back().y)}); return out;
+}
+
+static constexpr int64_t JOIN_TOL=10000; // coordinate tolerance
+static bool eqPt(const Point64&a,const Point64&b){ return llabs(a.x-b.x)<=JOIN_TOL && llabs(a.y-b.y)<=JOIN_TOL; }
+
+// Connect line/arc segments into closed rings
+static Paths64 connectSegments(std::vector<Path64> segs){
+    Paths64 out;
+    std::vector<char> used(segs.size(), 0);
+
+    for(size_t i=0;i<segs.size();++i){
+        if(used[i]) continue;
+        Path64 cur = segs[i];
+        used[i] = 1;
+        bool extended = true;
+
+        while(extended){
+            extended = false;
+
+            for(size_t j=0;j<segs.size();++j){
+                if(used[j]) continue;
+                auto &s = segs[j];
+
+                // хвост cur  → голова s
+                if(eqPt(cur.back(), s.front())){
+                    cur.insert(cur.end(), s.begin()+1, s.end());
+                    used[j]=1; extended=true; break;
+                }
+                // хвост cur  → хвост s (надо развернуть s)
+                if(eqPt(cur.back(), s.back())){
+                    cur.insert(cur.end(), s.rbegin()+1, s.rend());
+                    used[j]=1; extended=true; break;
+                }
+                // голова cur → хвост s  (дописываем в начало)
+                if(eqPt(cur.front(), s.back())){
+                    cur.insert(cur.begin(), s.rbegin()+1, s.rend());
+                    used[j]=1; extended=true; break;
+                }
+                // голова cur → голова s  (дописываем в начало, разворачивая s)
+                if(eqPt(cur.front(), s.front())){
+                    cur.insert(cur.begin(), s.begin()+1, s.end());
+                    used[j]=1; extended=true; break;
+                }
+            }
+        }
+
+        // замкнулся?
+        if(eqPt(cur.front(), cur.back()) && cur.size() > 3)
+            out.push_back(std::move(cur));
+    }
+    return out;
+}
+
+
+// Parse DXF entities into polygons
 static std::vector<RawPart> loadDXF(const std::vector<std::string>& files){
     std::vector<RawPart> parts;
     for(size_t idx=0; idx<files.size(); ++idx){
         std::ifstream fin(files[idx]); if(!fin) throw std::runtime_error("open "+files[idx]);
-        std::string c,v; bool inEnt=false; Path64 cur; Paths64 rings;
-        auto nxt=[&](){ return bool(std::getline(fin,c)&&std::getline(fin,v)); };
+        std::string c,v; bool inEnt=false; auto nxt=[&](){ return bool(std::getline(fin,c)&&std::getline(fin,v)); };
+        std::vector<Path64> rings,segs; Path64 cur; bool closed=false; PointD center{0,0},maj{0,0}; double radius=0,ratio=1,a1=0,a2=0; std::vector<PointD> fit;
         while(nxt()){
             if(c=="0"&&v=="SECTION"){ nxt(); inEnt=(c=="2"&&v=="ENTITIES"); continue; }
             if(!inEnt||c!="0") continue;
-            if(v=="LWPOLYLINE"){
-                cur.clear(); bool closed=false;
-                while(nxt()){
-                    if(c=="0") break;
-                    if(c=="70") closed=(std::stoi(v)&1);
-                    else if(c=="10"){ double x=std::stod(v); nxt(); double y=std::stod(v); cur.push_back({I64(x),I64(y)}); }
-                }
-                if(closed) rings.push_back(cur);
-            }
+            if(v=="LWPOLYLINE"){ cur.clear(); closed=false; while(nxt()){ if(c=="0") break; if(c=="70") closed=(std::stoi(v)&1); else if(c=="10"){ double x=std::stod(v); nxt(); double y=std::stod(v); cur.push_back({I64(x),I64(y)}); } } if(closed) rings.push_back(cur); else segs.push_back(cur); }
+            else if(v=="LINE"){ double x1=0,y1=0,x2=0,y2=0; while(nxt()){ if(c=="0") break; if(c=="10"){ x1=std::stod(v); nxt(); y1=std::stod(v); } else if(c=="11"){ x2=std::stod(v); nxt(); y2=std::stod(v); }} Path64 lineSeg; lineSeg.push_back({I64(x1),I64(y1)}); lineSeg.push_back({I64(x2),I64(y2)}); segs.push_back(lineSeg); std::cerr << "LINE  (" << x1 << "," << y1 << ") -> (" << x2 << "," << y2 << ")\n";}
+            else if(v=="ARC"){ center=PointD{0,0}; radius=0;a1=0;a2=0; while(nxt()){ if(c=="0") break; if(c=="10"){ center.x=std::stod(v); nxt(); center.y=std::stod(v); } else if(c=="40") radius=std::stod(v); else if(c=="50") a1=std::stod(v); else if(c=="51") a2=std::stod(v); } segs.push_back(approxArc(center,radius,a1,a2)); }
+            else if(v=="CIRCLE"){ center=PointD{0,0}; radius=0; while(nxt()){ if(c=="0") break; if(c=="10"){ center.x=std::stod(v); nxt(); center.y=std::stod(v); } else if(c=="40") radius=std::stod(v); } segs.push_back(approxArc(center,radius,0,360)); }
+            else if(v=="ELLIPSE"){ center=PointD{0,0}; maj=PointD{0,0}; ratio=1;a1=0;a2=0; while(nxt()){ if(c=="0") break; if(c=="10"){ center.x=std::stod(v); nxt(); center.y=std::stod(v); } else if(c=="11"){ maj.x=std::stod(v); nxt(); maj.y=std::stod(v); } else if(c=="40") ratio=std::stod(v); else if(c=="41") a1=std::stod(v)*180.0/M_PI; else if(c=="42") a2=std::stod(v)*180.0/M_PI; } segs.push_back(approxEllipse(center,maj,ratio,a1,a2)); }
+            else if(v=="SPLINE"){ fit.clear(); while(nxt()){ if(c=="0") break; if(c=="10"){ PointD p; p.x=std::stod(v); nxt(); p.y=std::stod(v); fit.push_back(p); } } if(!fit.empty()) segs.push_back(approxSpline(fit)); }
+            else if(v=="POLYLINE"){ cur.clear(); while(nxt()){ if(c=="0"&&v=="VERTEX"){ PointD p; while(nxt()){ if(c=="0") break; if(c=="10"){ p.x=std::stod(v); nxt(); p.y=std::stod(v); } } cur.push_back({I64(p.x),I64(p.y)}); if(c!="0") break; } if(c=="0"&&v=="SEQEND") break; } if(!cur.empty()) segs.push_back(cur); }
         }
+        auto joined=connectSegments(segs);std::cerr << "DXF debug  "<< files[idx] << "  segs="   << segs.size() << "  joined=" << joined.size() << "  rings="  << rings.size() << '\n'; rings.insert(rings.end(),joined.begin(),joined.end());
         if(rings.empty()) throw std::runtime_error("no rings in "+files[idx]);
-        std::sort(rings.begin(),rings.end(),[](auto&a,auto&b){return std::abs(Area(a))>std::abs(Area(b));});
+        std::sort(rings.begin(),rings.end(),[](const Path64&a,const Path64&b){return std::abs(Area(a))>std::abs(Area(b));});
         if(Area(rings[0])<0) ReversePath(rings[0]);
         for(size_t i=1;i<rings.size();++i) if(Area(rings[i])>0) ReversePath(rings[i]);
         parts.push_back({rings,std::abs(Area(rings[0]))/(SCALE*SCALE),int(idx)});

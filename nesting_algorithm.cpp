@@ -36,6 +36,8 @@ using namespace Clipper2Lib;
 // Масштаб преобразования мм → int64 (Clipper scale)
 constexpr double SCALE = 1e4;
 constexpr int DEFAULT_ROT_STEP = 10;
+constexpr double TOL_MM = 2.0;                 // base tolerance in mm
+constexpr int64_t TOLERANCE = static_cast<int64_t>(TOL_MM * SCALE + 0.5);
 
 // Преобразование double → int64 с учетом SCALE
 inline int64_t I64(double v) {
@@ -51,11 +53,6 @@ inline double Dbl(int64_t v) {
 template <typename T>
 void ReversePath(std::vector<T>& p) {
     std::reverse(p.begin(), p.end());
-}
-
-inline int64_t distance(const Point64& a, const Point64& b) {
-    int64_t dx = a.x - b.x, dy = a.y - b.y;
-    return static_cast<int64_t>(std::sqrt(double(dx) * dx + double(dy) * dy));
 }
 // Compute bounding box of multiple polygons
 
@@ -75,6 +72,30 @@ static Rect64 getBBox(const Paths64& P){
 }
 
 // Compute bounding box of a single polygon
+static Rect64 getBBox(const Path64& p)
+{
+    if(p.empty()) return Rect64{0,0,0,0};
+    Rect64 r{p[0].x,p[0].y,p[0].x,p[0].y};
+    for(const auto&pt : p){
+        r.left   = std::min(r.left, pt.x);
+        r.bottom = std::min(r.bottom, pt.y);
+        r.right  = std::max(r.right, pt.x);
+        r.top    = std::max(r.top, pt.y);
+    }
+    return r;
+}
+
+// Path length in mm
+static double pathLength(const Path64& p)
+{
+    if(p.size() < 2) return 0.0;
+    double len = 0.0;
+    for(size_t i=1;i<p.size();++i)
+        len += std::hypot(double(p[i].x - p[i-1].x),
+                          double(p[i].y - p[i-1].y));
+    return len / SCALE;
+}
+
 // Union all rings to simplify part geometry
 // Merge all polygons in a set
 static Paths64 unionAll(const Paths64& in){
@@ -127,8 +148,19 @@ static Path64 approxSpline(const std::vector<PointD>& pts,int segPer=8){
     out.push_back({I64(pts.back().x),I64(pts.back().y)}); return out;
 }
 
-static constexpr int64_t JOIN_TOL=10000; // coordinate tolerance
-static bool eqPt(const Point64&a,const Point64&b){ return llabs(a.x-b.x)<=JOIN_TOL && llabs(a.y-b.y)<=JOIN_TOL; }
+// Point comparison within tolerance
+static bool eqPt(const Point64&a,const Point64&b)
+{
+    return llabs(a.x - b.x) <= TOLERANCE && llabs(a.y - b.y) <= TOLERANCE;
+}
+
+// Euclidean distance between two points
+inline int64_t distance(const Point64& a, const Point64& b)
+{
+    double dx = double(a.x) - double(b.x);
+    double dy = double(a.y) - double(b.y);
+    return static_cast<int64_t>(std::sqrt(dx*dx + dy*dy));
+}
 
 // Small helper to read DXF code/value pairs with single element lookahead
 struct DXFReader{
@@ -315,14 +347,26 @@ static bool parseSpline(DXFReader& rd, Path64& out, int segNo)
     }
     else if (!ctrlPts.empty() && knotVec.size() >= ctrlPts.size() + degree + 1) {
         std::vector<Vec2> ctrlVec;
-        for (auto& p : ctrlPts) ctrlVec.push_back({p[0], p[1]});
+        for (auto& p : ctrlPts)
+            ctrlVec.push_back({p[0], p[1]});
         auto poly = approximateSpline(ctrlVec, knotVec, degree, 100);
         out.insert(out.end(), poly.begin(), poly.end());
     }
 
     // --- Замыкание ---
-    if (closed && !out.empty() && out.front() != out.back())
-        out.push_back(out.front());
+    if (!out.empty()) {
+        if (closed) {
+            int64_t dist = distance(out.front(), out.back());
+            if (dist <= TOLERANCE && out.front() != out.back()) {
+                out.push_back(out.front());
+                std::cerr << "[AutoClose] spline " << segNo
+                          << " closed (distance=" << Dbl(dist) << " mm)\n";
+            } else if (dist > TOLERANCE) {
+                std::cerr << "[Warn] spline " << segNo
+                          << " not closed, gap=" << Dbl(dist) << " mm\n";
+            }
+        }
+    }
 
     // --- Убираем мусорные (0,0) точки на концах ---
     while (!out.empty() && out.back().x == 0 && out.back().y == 0)
@@ -376,93 +420,117 @@ static bool parsePolyline(DXFReader&rd,Path64&out,int seg){
 
 
 // Connect line/arc segments into closed rings
-static Paths64 connectSegments(const std::vector<Path64>& segs) {
+static Paths64 connectSegments(const std::vector<Path64>& segs)
+{
     using Point = Point64;
-    static constexpr int64_t TOL = 10000; // 1мм если SCALE=1e4
-    auto eq = [](const Point& a, const Point& b) {
-        return std::abs(a.x - b.x) <= TOL && std::abs(a.y - b.y) <= TOL;
+    const int64_t TOL = TOLERANCE;
+
+    auto key = [&](const Point& p)
+    {
+        return std::make_pair((p.x + TOL/2)/TOL, (p.y + TOL/2)/TOL);
     };
-    // Индексируем все концы
+
     std::multimap<std::pair<int64_t,int64_t>, size_t> ends;
-    auto key = [&](const Point& p) { return std::make_pair((p.x+TOL/2)/TOL, (p.y+TOL/2)/TOL); };
-    for(size_t i=0; i<segs.size(); ++i) {
+    for(size_t i=0;i<segs.size();++i)
+    {
+        if(segs[i].empty()) continue;
         ends.emplace(key(segs[i].front()), i);
         ends.emplace(key(segs[i].back()),  i);
     }
+
     std::vector<char> used(segs.size(),0);
     Paths64 out;
-    for(size_t i=0; i<segs.size(); ++i) {
-        if(used[i]) continue;
+    size_t closedCnt = 0;
+
+    for(size_t i=0;i<segs.size();++i)
+    {
+        if(used[i] || segs[i].empty()) continue;
         Path64 path = segs[i];
-        used[i]=1;
+        used[i] = 1;
         bool extended = true;
-        while(extended) {
+
+        while(extended)
+        {
             extended = false;
-            // extend tail
             auto r = ends.equal_range(key(path.back()));
-            for(auto it=r.first; it!=r.second; ++it) {
+            for(auto it=r.first; it!=r.second; ++it)
+            {
                 size_t j = it->second;
-                if(used[j] || i==j) continue;
-                if(eq(path.back(), segs[j].front())) {
+                if(used[j] || j==i) continue;
+                if(eqPt(path.back(), segs[j].front()))
+                {
                     path.insert(path.end(), segs[j].begin()+1, segs[j].end());
                     used[j]=1; extended=true; break;
                 }
-                if(eq(path.back(), segs[j].back())) {
+                if(eqPt(path.back(), segs[j].back()))
+                {
                     path.insert(path.end(), segs[j].rbegin()+1, segs[j].rend());
                     used[j]=1; extended=true; break;
                 }
             }
-            // extend head
+
             r = ends.equal_range(key(path.front()));
-            for(auto it=r.first; it!=r.second; ++it) {
+            for(auto it=r.first; it!=r.second; ++it)
+            {
                 size_t j = it->second;
-                if(used[j] || i==j) continue;
-                if(eq(path.front(), segs[j].back())) {
+                if(used[j] || j==i) continue;
+                if(eqPt(path.front(), segs[j].back()))
+                {
                     path.insert(path.begin(), segs[j].rbegin()+1, segs[j].rend());
                     used[j]=1; extended=true; break;
                 }
-                if(eq(path.front(), segs[j].front())) {
+                if(eqPt(path.front(), segs[j].front()))
+                {
                     path.insert(path.begin(), segs[j].begin()+1, segs[j].end());
                     used[j]=1; extended=true; break;
                 }
             }
         }
-        std::map<std::pair<int64_t,int64_t>, int> ptcnt;
-        // Закрываем, если почти замкнулось
-        auto close_enough = [](const Point64& a, const Point64& b) {
-            int64_t dx = a.x - b.x, dy = a.y - b.y;
-            return dx*dx + dy*dy < 1000*1000; // 4e8 = 20мм (если SCALE=1e4)
-        };
 
-        // Закрываем, если почти замкнулось
-        const int64_t TOLERANCE = 1000; // 0.1 мм если SCALE=1e4
-        for (auto& path : out) {
-            if (!path.empty() && !eqPt(path.front(), path.back()) && path.size() > 3) {
-                std::cerr << "Auto-close? distance=" << distance(path.front(), path.back())
-                        << "  TOL=" << TOLERANCE << "  pt1=(" << path.front().x << "," << path.front().y
-                        << ")  ptN=(" << path.back().x << "," << path.back().y << ")\n";
-                if (distance(path.front(), path.back()) < TOLERANCE) {
-                    path.push_back(path.front());
-                } else {
-                    std::cerr << "Warning: path not closed and too far apart!\n";
-                }
+        if(path.size()>2 && !eqPt(path.front(), path.back()))
+        {
+            int64_t dist = distance(path.front(), path.back());
+            if(dist <= TOLERANCE)
+            {
+                path.push_back(path.front());
+                std::cerr << "[AutoClose] path " << out.size()
+                          << " closed (distance=" << Dbl(dist) << " mm)\n";
+            }
+            else
+            {
+                std::cerr << "[Warn] open path " << out.size()
+                          << " gap=" << Dbl(dist) << " mm\n";
             }
         }
-        // Только не-вырожденные
-        if(path.size() > 3)
-            out.push_back(std::move(path));
 
-        for (auto& seg : segs) {
-            ptcnt[key(seg.front())]++;
-            ptcnt[key(seg.back())]++;
+        bool closed = !path.empty() && eqPt(path.front(), path.back());
+        if(closed) closedCnt++;
+
+        if(path.size()>1)
+        {
+            out.push_back(std::move(path));
+            Rect64 bb = getBBox(out.back());
+            double len = pathLength(out.back());
+            std::cerr << " [path " << out.size()-1 << "] len=" << len << " mm bbox="
+                      << Dbl(bb.right-bb.left) << "x" << Dbl(bb.top-bb.bottom)
+                      << " closed=" << (closed?"yes":"no") << "\n";
         }
-        std::cerr << "Dangling ends: ";
-        for (auto& p : ptcnt) {
-            if (p.second % 2 != 0)
-                std::cerr << "(" << Dbl(p.first.first*TOL) << "," << Dbl(p.first.second*TOL) << ") ";
-        }
-        std::cerr << "\n";
     }
+
+    std::map<std::pair<int64_t,int64_t>, int> ptcnt;
+    for(size_t i=0;i<segs.size();++i)
+    {
+        if(segs[i].empty()) continue;
+        ptcnt[key(segs[i].front())]++;
+        ptcnt[key(segs[i].back())]++;
+    }
+    std::cerr << "Dangling ends: ";
+    for (auto& p : ptcnt)
+        if (p.second % 2 != 0)
+            std::cerr << "(" << Dbl(p.first.first*TOL) << "," << Dbl(p.first.second*TOL) << ") ";
+    std::cerr << "\n";
+    std::cerr << "Segments=" << segs.size() << " Paths=" << out.size()
+              << " Closed=" << closedCnt << "\n";
     return out;
 }
 

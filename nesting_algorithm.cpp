@@ -18,10 +18,12 @@
 #include <unordered_map>
 #include <algorithm>
 #include <cmath>
+#include <map>
+#include <sstream>
 #include <iomanip>
 #include <stdexcept>
 #include <cstdint>
-
+#include <array>
 #define _USE_MATH_DEFINES
 #include <math.h>
 
@@ -30,32 +32,49 @@
 using namespace Clipper2Lib;
 
 // ───────── helpers ─────────
-constexpr double SCALE = 1000.0;              // мм → int64
-constexpr int    DEFAULT_ROT_STEP = 10;
-inline int64_t I64(double v){ return llround(v * SCALE); }
-inline double  Dbl(int64_t v){ return double(v) / SCALE; }
+// Rect64: 64-bit integer rectangle
+// Масштаб преобразования мм → int64 (Clipper scale)
+constexpr double SCALE = 1e4;
+constexpr int DEFAULT_ROT_STEP = 10;
+
+// Преобразование double → int64 с учетом SCALE
+inline int64_t I64(double v) {
+    return llround(v * SCALE);
+}
+
+// Преобразование int64 → double с учетом SCALE
+inline double Dbl(int64_t v) {
+    return double(v) / SCALE;
+}
 
 // Reverse polygon orientation in place
-
-// Reverse polygon orientation
 template <typename T>
-void ReversePath(std::vector<T>& p){
+void ReversePath(std::vector<T>& p) {
     std::reverse(p.begin(), p.end());
 }
 
+inline int64_t distance(const Point64& a, const Point64& b) {
+    int64_t dx = a.x - b.x, dy = a.y - b.y;
+    return static_cast<int64_t>(std::sqrt(double(dx) * dx + double(dy) * dy));
+}
 // Compute bounding box of multiple polygons
 
 static Rect64 getBBox(const Paths64& P){
-    Rect64 r{INT64_MAX,INT64_MAX,INT64_MIN,INT64_MIN};
-    for(const auto&path:P) for(auto pt:path){
-        r.left = std::min(r.left, pt.x);
-        r.bottom = std::min(r.bottom, pt.y);
-        r.right = std::max(r.right, pt.x);
-        r.top = std::max(r.top, pt.y);
-    }
+    if (P.empty() || P[0].empty())
+        return Rect64{0,0,0,0};
+    auto pt0 = P[0][0];
+    Rect64 r{pt0.x, pt0.y, pt0.x, pt0.y};
+    for(const auto&path:P)
+        for(auto pt:path){
+            r.left = std::min(r.left, pt.x);
+            r.bottom = std::min(r.bottom, pt.y);
+            r.right = std::max(r.right, pt.x);
+            r.top = std::max(r.top, pt.y);
+        }
     return r;
 }
 
+// Compute bounding box of a single polygon
 // Union all rings to simplify part geometry
 // Merge all polygons in a set
 static Paths64 unionAll(const Paths64& in){
@@ -111,79 +130,464 @@ static Path64 approxSpline(const std::vector<PointD>& pts,int segPer=8){
 static constexpr int64_t JOIN_TOL=10000; // coordinate tolerance
 static bool eqPt(const Point64&a,const Point64&b){ return llabs(a.x-b.x)<=JOIN_TOL && llabs(a.y-b.y)<=JOIN_TOL; }
 
+// Small helper to read DXF code/value pairs with single element lookahead
+struct DXFReader{
+    std::ifstream& in;
+    std::string code,value;
+    bool has=false;
+    DXFReader(std::ifstream&f):in(f){}
+    bool next(){
+        if(has){ has=false; return true; }
+        return bool(std::getline(in,code) && std::getline(in,value));
+    }
+    void push(){ has=true; }
+};
+
+// Read pair helper
+static bool expect(DXFReader&rd,const char* need,int seg,const char* what){
+    if(!rd.next()){ std::cerr<<"seg "<<seg<<" unexpected EOF while reading "<<what<<"\n"; return false; }
+    if(rd.code!=need) std::cerr<<"seg "<<seg<<" expected "<<need<<" after "<<what<<" got "<<rd.code<<"\n"; 
+    return true;
+}
+
+// Parse LINE entity
+static bool parseLine(DXFReader&rd, Path64&out, int seg) {
+    double x1=0, y1=0, x2=0, y2=0; bool p1=false, p2=false; out.clear();
+    while(rd.next()){
+        if(rd.code == "0"){ rd.push(); break; }
+        if(rd.code == "10"){
+            x1 = std::stod(rd.value);
+            if (!rd.next() || rd.code != "20") { std::cerr << "seg " << seg << " LINE missing y1\n"; return false; }
+            y1 = std::stod(rd.value);
+            p1 = true;
+        }
+        else if(rd.code == "11"){
+            x2 = std::stod(rd.value);
+            if (!rd.next() || rd.code != "21") { std::cerr << "seg " << seg << " LINE missing y2\n"; return false; }
+            y2 = std::stod(rd.value);
+            p2 = true;
+        }
+    }
+    if (!p1 || !p2) {
+        std::cerr << "seg " << seg << " LINE missing point\n";
+        return false;
+    }
+    out = { {I64(x1), I64(y1)}, {I64(x2), I64(y2)} };
+    return true;
+}
+
+// Parse ARC entity
+static bool parseArc(DXFReader&rd,Path64&out,int seg){
+    PointD cen{0,0}; double radius=0,a1=0,a2=0; bool haveC=false,haveR=false; out.clear();
+    while(rd.next()){
+        if(rd.code=="0"){ rd.push(); break; }
+        if(rd.code=="10"){ cen.x=std::stod(rd.value); if(expect(rd,"20",seg,"10")) cen.y=std::stod(rd.value); haveC=true; }
+        else if(rd.code=="40"){ radius=std::stod(rd.value); haveR=true; }
+        else if(rd.code=="50") a1=std::stod(rd.value);
+        else if(rd.code=="51") a2=std::stod(rd.value);
+    }
+    if(!haveC||!haveR){ std::cerr<<"seg "<<seg<<" ARC missing data\n"; return false; }
+    out=approxArc(cen,radius,a1,a2); return !out.empty();
+}
+
+// Parse CIRCLE entity
+static bool parseCircle(DXFReader&rd,Path64&out,int seg){
+    PointD cen{0,0}; double radius=0; bool haveC=false,haveR=false; out.clear();
+    while(rd.next()){
+        if(rd.code=="0"){ rd.push(); break; }
+        if(rd.code=="10"){ cen.x=std::stod(rd.value); if(expect(rd,"20",seg,"10")) cen.y=std::stod(rd.value); haveC=true; }
+        else if(rd.code=="40"){ radius=std::stod(rd.value); haveR=true; }
+    }
+    if(!haveC||!haveR){ std::cerr<<"seg "<<seg<<" CIRCLE missing data\n"; return false; }
+    out=approxArc(cen,radius,0,360); return true;
+}
+
+// Parse ELLIPSE entity
+static bool parseEllipse(DXFReader&rd,Path64&out,int seg){
+    PointD cen{0,0},maj{0,0}; double ratio=1,a1=0,a2=0; bool haveC=false,haveMaj=false; out.clear();
+    while(rd.next()){
+        if(rd.code=="0"){ rd.push(); break; }
+        if(rd.code=="10"){ cen.x=std::stod(rd.value); if(expect(rd,"20",seg,"10")) cen.y=std::stod(rd.value); haveC=true; }
+        else if(rd.code=="11"){ maj.x=std::stod(rd.value); if(expect(rd,"21",seg,"11")) maj.y=std::stod(rd.value); haveMaj=true; }
+        else if(rd.code=="40") ratio=std::stod(rd.value);
+        else if(rd.code=="41") a1=std::stod(rd.value)*180.0/M_PI;
+        else if(rd.code=="42") a2=std::stod(rd.value)*180.0/M_PI;
+    }
+    if(!haveC||!haveMaj){ std::cerr<<"seg "<<seg<<" ELLIPSE missing data\n"; return false; }
+    out=approxEllipse(cen,maj,ratio,a1,a2); return !out.empty();
+}
+
+// Parse SPLINE entity using fit points only
+// Функция разбора SPLINE из DXF
+static bool parseSpline(DXFReader& rd, Path64& out, int segNo)
+{
+    struct Vec2 { double x, y; };
+
+    // Де Бура для B-spline
+    auto deBoor = [](int k, int degree, double t,
+                     const std::vector<double>& knots,
+                     const std::vector<Vec2>& ctrl)
+    {
+        std::vector<Vec2> d;
+        d.reserve(degree + 1);
+        for (int j = 0; j <= degree; ++j)
+            d.push_back(ctrl[k - degree + j]);
+
+        for (int r = 1; r <= degree; ++r)
+            for (int j = degree; j >= r; --j)
+            {
+                int i = k - degree + j;
+                double den = knots[i + degree - r + 1] - knots[i];
+                double alpha;
+                if (den == 0) alpha = 0;
+                else          alpha = (t - knots[i]) / den;
+                d[j].x = (1 - alpha) * d[j - 1].x + alpha * d[j].x;
+                d[j].y = (1 - alpha) * d[j - 1].y + alpha * d[j].y;
+            }
+        return d[degree];
+    };
+
+    // Аппроксимация по B-spline (samples ~ 100)
+    auto approximateSpline = [&](const std::vector<Vec2>& ctrl,
+                                 const std::vector<double>& knots,
+                                 int degree, int samples)
+    {
+        std::vector<Point64> poly;
+        int n = (int)ctrl.size() - 1;
+        double t0 = knots[degree];
+        double t1 = knots[n + 1];
+        for (int s = 0; s < samples; ++s)
+        {
+            double t = t0 + (t1 - t0) * s / (samples - 1);
+            int k = degree;
+            while (k < n + 1 && !(t >= knots[k] && t < knots[k + 1])) ++k;
+            if (k == n + 1) k = n;
+
+            Vec2 p = deBoor(k, degree, t, knots, ctrl);
+            if (std::isnan(p.x) || std::isnan(p.y)) continue;
+            poly.push_back(Point64(I64(p.x), I64(p.y)));
+        }
+        return poly;
+    };
+
+    // --- Чтение DXF полей ---
+    std::vector<std::array<double,3>> fitPts, ctrlPts;
+    std::vector<double> knotVec;
+    out.clear();
+
+    bool closed = false;
+    int degree = 3;
+
+    double fx=0, fy=0, fz=0; bool fxOk=false, fyOk=false, fzOk=false;
+    double cx=0, cy=0, cz=0; bool cxOk=false, cyOk=false, czOk=false;
+
+    while (rd.next())
+    {
+        if (rd.code[0]=='0') { rd.push(); break; }
+        int code = std::stoi(rd.code);
+        switch (code)
+        {
+        // fit-пойнты
+        case 11: fx = std::stod(rd.value); fxOk = true; if(fxOk&&fyOk&&fzOk) { fitPts.push_back({fx,fy,fz}); fxOk=fyOk=fzOk=false; } break;
+        case 21: fy = std::stod(rd.value); fyOk = true; if(fxOk&&fyOk&&fzOk) { fitPts.push_back({fx,fy,fz}); fxOk=fyOk=fzOk=false; } break;
+        case 31: fz = std::stod(rd.value); fzOk = true; if(fxOk&&fyOk&&fzOk) { fitPts.push_back({fx,fy,fz}); fxOk=fyOk=fzOk=false; } break;
+        // control-points
+        case 10: cx = std::stod(rd.value); cxOk = true; break;
+        case 20: cy = std::stod(rd.value); cyOk = true; break;
+        case 30:
+            cz = std::stod(rd.value); czOk = true;
+            if(cxOk&&cyOk&&czOk) { ctrlPts.push_back({cx,cy,cz}); cxOk=cyOk=czOk=false; }
+            break;
+        // knots
+        case 40: knotVec.push_back(std::stod(rd.value)); break;
+        // flags etc
+        case 70: closed = (std::stoi(rd.value) & 0x08); break;
+        case 71: degree = std::stoi(rd.value); break;
+        default: break;
+        }
+    }
+
+    // --- Формируем полилинию ---
+    if (!fitPts.empty()) {
+        for (auto &p : fitPts)
+            if (!std::isnan(p[0]) && !std::isnan(p[1]))
+                out.push_back(Point64(I64(p[0]), I64(p[1])));
+    }
+    else if (!ctrlPts.empty() && knotVec.size() >= ctrlPts.size() + degree + 1) {
+        std::vector<Vec2> ctrlVec;
+        for (auto& p : ctrlPts) ctrlVec.push_back({p[0], p[1]});
+        auto poly = approximateSpline(ctrlVec, knotVec, degree, 100);
+        out.insert(out.end(), poly.begin(), poly.end());
+    }
+
+    // --- Замыкание ---
+    if (closed && !out.empty() && out.front() != out.back())
+        out.push_back(out.front());
+
+    // --- Убираем мусорные (0,0) точки на концах ---
+    while (!out.empty() && out.back().x == 0 && out.back().y == 0)
+        out.pop_back();
+    if (!out.empty() && out.front().x == 0 && out.front().y == 0)
+        out.erase(out.begin());
+
+    // --- Debug ---
+    std::cerr << " flags: closed="<<closed<<"  degree="<<degree
+              << "  fit="<<fitPts.size()<<"  ctrl="<<ctrlPts.size()
+              << "  knots="<<knotVec.size() << '\n';
+
+    if(out.empty())
+        std::cerr << "  !! spline #" << segNo << " → no points parsed\n";
+    return !out.empty();
+}
+
+// Parse LWPOLYLINE entity
+static bool parseLWPolyline(DXFReader&rd,Path64&out,bool&closed,int seg){
+    out.clear(); closed=false; bool ok=true;
+    while(rd.next()){
+        if(rd.code=="0"){ rd.push(); break; }
+        if(rd.code=="70") closed=(std::stoi(rd.value)&1);
+        else if(rd.code=="10"){ double x=std::stod(rd.value); if(expect(rd,"20",seg,"10")) { double y=std::stod(rd.value); out.push_back({I64(x),I64(y)}); } }
+    }
+    if(out.empty()){ std::cerr<<"seg "<<seg<<" LWPOLYLINE empty\n"; ok=false; }
+    return ok && !out.empty();
+}
+
+// Parse classic POLYLINE entity (sequence of VERTEX)
+static bool parsePolyline(DXFReader&rd,Path64&out,int seg){
+    out.clear();
+    while(rd.next()){
+        if(rd.code=="0" && rd.value=="VERTEX"){
+            double x=0,y=0; bool have=false;
+            while(rd.next()){
+                if(rd.code=="0"){ rd.push(); break; }
+                if(rd.code=="10"){ x=std::stod(rd.value); if(expect(rd,"20",seg,"10")) y=std::stod(rd.value); have=true; }
+            }
+            if(have) out.push_back({I64(x),I64(y)});
+        }else if(rd.code=="0" && rd.value=="SEQEND"){
+            break;
+        }else if(rd.code=="0"){
+            rd.push();
+            break;
+        }
+    }
+    if(out.empty()){ std::cerr<<"seg "<<seg<<" POLYLINE empty\n"; return false; }
+    return true;
+}
+
+
 // Connect line/arc segments into closed rings
-static Paths64 connectSegments(std::vector<Path64> segs){
+static Paths64 connectSegments(const std::vector<Path64>& segs) {
+    using Point = Point64;
+    static constexpr int64_t TOL = 10000; // 1мм если SCALE=1e4
+    auto eq = [](const Point& a, const Point& b) {
+        return std::abs(a.x - b.x) <= TOL && std::abs(a.y - b.y) <= TOL;
+    };
+    // Индексируем все концы
+    std::multimap<std::pair<int64_t,int64_t>, size_t> ends;
+    auto key = [&](const Point& p) { return std::make_pair((p.x+TOL/2)/TOL, (p.y+TOL/2)/TOL); };
+    for(size_t i=0; i<segs.size(); ++i) {
+        ends.emplace(key(segs[i].front()), i);
+        ends.emplace(key(segs[i].back()),  i);
+    }
+    std::vector<char> used(segs.size(),0);
     Paths64 out;
-    std::vector<char> used(segs.size(), 0);
-
-    for(size_t i=0;i<segs.size();++i){
+    for(size_t i=0; i<segs.size(); ++i) {
         if(used[i]) continue;
-        Path64 cur = segs[i];
-        used[i] = 1;
+        Path64 path = segs[i];
+        used[i]=1;
         bool extended = true;
-
-        while(extended){
+        while(extended) {
             extended = false;
-
-            for(size_t j=0;j<segs.size();++j){
-                if(used[j]) continue;
-                auto &s = segs[j];
-
-                // хвост cur  → голова s
-                if(eqPt(cur.back(), s.front())){
-                    cur.insert(cur.end(), s.begin()+1, s.end());
+            // extend tail
+            auto r = ends.equal_range(key(path.back()));
+            for(auto it=r.first; it!=r.second; ++it) {
+                size_t j = it->second;
+                if(used[j] || i==j) continue;
+                if(eq(path.back(), segs[j].front())) {
+                    path.insert(path.end(), segs[j].begin()+1, segs[j].end());
                     used[j]=1; extended=true; break;
                 }
-                // хвост cur  → хвост s (надо развернуть s)
-                if(eqPt(cur.back(), s.back())){
-                    cur.insert(cur.end(), s.rbegin()+1, s.rend());
+                if(eq(path.back(), segs[j].back())) {
+                    path.insert(path.end(), segs[j].rbegin()+1, segs[j].rend());
                     used[j]=1; extended=true; break;
                 }
-                // голова cur → хвост s  (дописываем в начало)
-                if(eqPt(cur.front(), s.back())){
-                    cur.insert(cur.begin(), s.rbegin()+1, s.rend());
+            }
+            // extend head
+            r = ends.equal_range(key(path.front()));
+            for(auto it=r.first; it!=r.second; ++it) {
+                size_t j = it->second;
+                if(used[j] || i==j) continue;
+                if(eq(path.front(), segs[j].back())) {
+                    path.insert(path.begin(), segs[j].rbegin()+1, segs[j].rend());
                     used[j]=1; extended=true; break;
                 }
-                // голова cur → голова s  (дописываем в начало, разворачивая s)
-                if(eqPt(cur.front(), s.front())){
-                    cur.insert(cur.begin(), s.begin()+1, s.end());
+                if(eq(path.front(), segs[j].front())) {
+                    path.insert(path.begin(), segs[j].begin()+1, segs[j].end());
                     used[j]=1; extended=true; break;
                 }
             }
         }
+        std::map<std::pair<int64_t,int64_t>, int> ptcnt;
+        // Закрываем, если почти замкнулось
+        auto close_enough = [](const Point64& a, const Point64& b) {
+            int64_t dx = a.x - b.x, dy = a.y - b.y;
+            return dx*dx + dy*dy < 1000*1000; // 4e8 = 20мм (если SCALE=1e4)
+        };
 
-        // замкнулся?
-        if(eqPt(cur.front(), cur.back()) && cur.size() > 3)
-            out.push_back(std::move(cur));
+        // Закрываем, если почти замкнулось
+        const int64_t TOLERANCE = 1000; // 0.1 мм если SCALE=1e4
+        for (auto& path : out) {
+            if (!path.empty() && !eqPt(path.front(), path.back()) && path.size() > 3) {
+                std::cerr << "Auto-close? distance=" << distance(path.front(), path.back())
+                        << "  TOL=" << TOLERANCE << "  pt1=(" << path.front().x << "," << path.front().y
+                        << ")  ptN=(" << path.back().x << "," << path.back().y << ")\n";
+                if (distance(path.front(), path.back()) < TOLERANCE) {
+                    path.push_back(path.front());
+                } else {
+                    std::cerr << "Warning: path not closed and too far apart!\n";
+                }
+            }
+        }
+        // Только не-вырожденные
+        if(path.size() > 3)
+            out.push_back(std::move(path));
+
+        for (auto& seg : segs) {
+            ptcnt[key(seg.front())]++;
+            ptcnt[key(seg.back())]++;
+        }
+        std::cerr << "Dangling ends: ";
+        for (auto& p : ptcnt) {
+            if (p.second % 2 != 0)
+                std::cerr << "(" << Dbl(p.first.first*TOL) << "," << Dbl(p.first.second*TOL) << ") ";
+        }
+        std::cerr << "\n";
     }
     return out;
 }
 
-
+// Trim leading and trailing whitespace (helper for DXF group codes)
+static std::string trim(const std::string& s) {
+    size_t start = s.find_first_not_of(" \t\r\n");
+    size_t end = s.find_last_not_of(" \t\r\n");
+    return (start == std::string::npos) ? "" : s.substr(start, end - start + 1);
+}
+std::map<std::string, int> dxfStats;
+std::vector<std::string> unsupportedEntities;
 // Parse DXF entities into polygons
 static std::vector<RawPart> loadDXF(const std::vector<std::string>& files){
     std::vector<RawPart> parts;
     for(size_t idx=0; idx<files.size(); ++idx){
-        std::ifstream fin(files[idx]); if(!fin) throw std::runtime_error("open "+files[idx]);
-        std::string c,v; bool inEnt=false; auto nxt=[&](){ return bool(std::getline(fin,c)&&std::getline(fin,v)); };
-        std::vector<Path64> rings,segs; Path64 cur; bool closed=false; PointD center{0,0},maj{0,0}; double radius=0,ratio=1,a1=0,a2=0; std::vector<PointD> fit;
-        while(nxt()){
-            if(c=="0"&&v=="SECTION"){ nxt(); inEnt=(c=="2"&&v=="ENTITIES"); continue; }
-            if(!inEnt||c!="0") continue;
-            if(v=="LWPOLYLINE"){ cur.clear(); closed=false; while(nxt()){ if(c=="0") break; if(c=="70") closed=(std::stoi(v)&1); else if(c=="10"){ double x=std::stod(v); nxt(); double y=std::stod(v); cur.push_back({I64(x),I64(y)}); } } if(closed) rings.push_back(cur); else segs.push_back(cur); }
-            else if(v=="LINE"){ double x1=0,y1=0,x2=0,y2=0; while(nxt()){ if(c=="0") break; if(c=="10"){ x1=std::stod(v); nxt(); y1=std::stod(v); } else if(c=="11"){ x2=std::stod(v); nxt(); y2=std::stod(v); }} Path64 lineSeg; lineSeg.push_back({I64(x1),I64(y1)}); lineSeg.push_back({I64(x2),I64(y2)}); segs.push_back(lineSeg); std::cerr << "LINE  (" << x1 << "," << y1 << ") -> (" << x2 << "," << y2 << ")\n";}
-            else if(v=="ARC"){ center=PointD{0,0}; radius=0;a1=0;a2=0; while(nxt()){ if(c=="0") break; if(c=="10"){ center.x=std::stod(v); nxt(); center.y=std::stod(v); } else if(c=="40") radius=std::stod(v); else if(c=="50") a1=std::stod(v); else if(c=="51") a2=std::stod(v); } segs.push_back(approxArc(center,radius,a1,a2)); }
-            else if(v=="CIRCLE"){ center=PointD{0,0}; radius=0; while(nxt()){ if(c=="0") break; if(c=="10"){ center.x=std::stod(v); nxt(); center.y=std::stod(v); } else if(c=="40") radius=std::stod(v); } segs.push_back(approxArc(center,radius,0,360)); }
-            else if(v=="ELLIPSE"){ center=PointD{0,0}; maj=PointD{0,0}; ratio=1;a1=0;a2=0; while(nxt()){ if(c=="0") break; if(c=="10"){ center.x=std::stod(v); nxt(); center.y=std::stod(v); } else if(c=="11"){ maj.x=std::stod(v); nxt(); maj.y=std::stod(v); } else if(c=="40") ratio=std::stod(v); else if(c=="41") a1=std::stod(v)*180.0/M_PI; else if(c=="42") a2=std::stod(v)*180.0/M_PI; } segs.push_back(approxEllipse(center,maj,ratio,a1,a2)); }
-            else if(v=="SPLINE"){ fit.clear(); while(nxt()){ if(c=="0") break; if(c=="10"){ PointD p; p.x=std::stod(v); nxt(); p.y=std::stod(v); fit.push_back(p); } } if(!fit.empty()) segs.push_back(approxSpline(fit)); }
-            else if(v=="POLYLINE"){ cur.clear(); while(nxt()){ if(c=="0"&&v=="VERTEX"){ PointD p; while(nxt()){ if(c=="0") break; if(c=="10"){ p.x=std::stod(v); nxt(); p.y=std::stod(v); } } cur.push_back({I64(p.x),I64(p.y)}); if(c!="0") break; } if(c=="0"&&v=="SEQEND") break; } if(!cur.empty()) segs.push_back(cur); }
+        std::ifstream fin(files[idx]);
+        if(!fin) throw std::runtime_error("open "+files[idx]);
+        
+        DXFReader rd(fin);
+        bool inEnt = false;
+        std::vector<Path64> rings, segs;
+        int segNo = 0;
+        int splineNo = 0;
+        while(rd.next()) {
+            dxfStats[rd.value]++;
+            // Начало новой секции
+            if(trim(rd.code) == "0" && rd.value == "SECTION") {
+                if(rd.next() && trim(rd.code) == "2")
+                    inEnt = (rd.value == "ENTITIES");
+                continue;
+            }
+            // Конец секции — просто сбрасываем флаг!
+            if(trim(rd.code) == "0" && rd.value == "ENDSEC") {
+                inEnt = false;
+                continue;
+            }
+            // Обрабатываем только объекты в секции ENTITIES
+            if(!inEnt || trim(rd.code) != "0") continue;
+
+            std::cerr << "ENTITY code=" << rd.code << " value=" << rd.value << "\n";
+            Path64 tmp; bool closed = false;
+            if(rd.value == "LWPOLYLINE") {
+                if(parseLWPolyline(rd, tmp, closed, segNo++))
+                    (closed ? rings : segs).push_back(std::move(tmp));
+            } else if(rd.value == "LINE") {
+                if(parseLine(rd, tmp, segNo++)) segs.push_back(std::move(tmp));
+            } else if(rd.value == "ARC") {
+                if(parseArc(rd, tmp, segNo++)) segs.push_back(std::move(tmp));
+            } else if(rd.value == "CIRCLE") {
+                if(parseCircle(rd, tmp, segNo++)) segs.push_back(std::move(tmp));
+            } else if(rd.value == "ELLIPSE") {
+                if(parseEllipse(rd, tmp, segNo++)) segs.push_back(std::move(tmp));
+            } else if(rd.value == "SPLINE") {
+                std::cerr << "== SPLINE #" << splineNo << " ==\n";
+                if(parseSpline(rd, tmp, segNo++)) segs.push_back(std::move(tmp));
+                splineNo++;
+            } else if(rd.value == "POLYLINE") {
+                if(parsePolyline(rd, tmp, segNo++)) segs.push_back(std::move(tmp));
+            }
+            std::cerr << "\n======= DXF ENTITY STATS =======\n";
+        for (const auto& p : dxfStats) {
+            std::cerr << "  " << p.first << ": " << p.second << "\n";
         }
-        auto joined=connectSegments(segs);std::cerr << "DXF debug  "<< files[idx] << "  segs="   << segs.size() << "  joined=" << joined.size() << "  rings="  << rings.size() << '\n'; rings.insert(rings.end(),joined.begin(),joined.end());
-        if(rings.empty()) throw std::runtime_error("no rings in "+files[idx]);
-        std::sort(rings.begin(),rings.end(),[](const Path64&a,const Path64&b){return std::abs(Area(a))>std::abs(Area(b));});
-        if(Area(rings[0])<0) ReversePath(rings[0]);
-        for(size_t i=1;i<rings.size();++i) if(Area(rings[i])>0) ReversePath(rings[i]);
-        parts.push_back({rings,std::abs(Area(rings[0]))/(SCALE*SCALE),int(idx)});
+
+        if (!unsupportedEntities.empty()) {
+            std::cerr << "\n!!! UNSUPPORTED ENTITIES DETECTED !!!\n";
+            std::map<std::string, int> unsupportedCount;
+            for (const auto& e : unsupportedEntities) unsupportedCount[e]++;
+            for (const auto& p : unsupportedCount)
+                std::cerr << "  " << p.first << ": " << p.second << "\n";
+        }
+        std::cerr << "================================\n";
+        }
+
+        auto joined = connectSegments(segs);
+        std::cerr << "DXF debug  " << files[idx]
+                << "  segs=" << segs.size()
+                << "  joined=" << joined.size()
+                << "  rings=" << rings.size() << "\n";
+        // Диагностика: первая точка первого path
+        if (!joined.empty() && !joined[0].empty()) {
+            auto pt = joined[0][0];
+            std::cerr << " first pt: " << Dbl(pt.x) << ", " << Dbl(pt.y) << "\n";
+        }
+        // Добавляем все замкнутые контуры из joined
+        rings.insert(rings.end(), joined.begin(), joined.end());
+
+        // Главное: если rings всё ещё пуст, копируем все контуры из joined!
+        if (rings.empty() && !joined.empty())
+            rings = joined;
+        if (rings.empty()) throw std::runtime_error("no rings in " + files[idx]);
+        // Диагностика: площадь каждого контура
+        for (size_t i = 0; i < rings.size(); ++i)
+            std::cerr << "rings[" << i << "].Area=" << Area(rings[i]) << "\n";
+        std::sort(rings.begin(), rings.end(),
+            [](const Path64 &a, const Path64 &b) {
+                return std::abs(Area(a)) > std::abs(Area(b));
+            });
+        if (Area(rings[0]) < 0) ReversePath(rings[0]);
+        for (size_t i = 1; i < rings.size(); ++i)
+            if (Area(rings[i]) > 0) ReversePath(rings[i]);
+        // Вот здесь выводим точки для каждой фигуры!
+        for (size_t i = 0; i < rings.size(); ++i) {
+            std::cerr << "rings[" << i << "]:";
+            for (const auto& pt : rings[i])
+                std::cerr << " (" << pt.x << "," << pt.y << ")";
+            std::cerr << "\n";
+        }
+        // Далее обычное смещение к (0,0)
+        Rect64 bb = getBBox(rings);
+        int64_t dx = -bb.left, dy = -bb.bottom;
+        if (dx || dy)
+            for (auto &path : rings)
+                for (auto &pt : path) { pt.x += dx; pt.y += dy; }
+        // Диагностика: финальный bbox
+        Rect64 bb_mm = getBBox(rings);
+        std::cerr << " part " << idx
+                << " bbox = " << Dbl(bb_mm.right - bb_mm.left)
+                << " × " << Dbl(bb_mm.top - bb_mm.bottom) << " mm\n"
+                << " bottom=" << Dbl(bb_mm.bottom)
+                << " top=" << Dbl(bb_mm.top) << "\n";
+        // Добавляем деталь в parts
+        parts.push_back({rings, std::abs(Area(rings[0])) / (SCALE * SCALE), int(idx)});
+        
+
     }
     return parts;
 }
@@ -301,14 +705,53 @@ static CLI parse(int ac, char** av){
     return c;
 }
 
+std::string PolylineToDXF(const Path64& path) {
+    std::ostringstream ss;
+    ss << "0\nLWPOLYLINE\n8\n0\n90\n" << path.size() << "\n70\n1\n"; // 70=1 -> closed polyline
+    for (const auto& p : path) {
+        ss << "10\n" << Dbl(p.x) << "\n20\n" << Dbl(p.y) << "\n";
+    }
+    return ss.str();
+}
+void ExportToDXF(const std::string& filename, const std::vector<RawPart>& parts) {
+    std::ofstream f(filename);
+    f << "0\nSECTION\n2\nENTITIES\n";
+
+    for (const auto& part : parts) {
+        for (const auto& ring : part.rings) {  // экспорт всех колец каждой детали
+            f << PolylineToDXF(ring);
+        }
+    }
+
+    f << "0\nENDSEC\n0\nEOF\n";
+}
+
 // ───────── main ─────────
 // Entry point
-int main(int argc,char*argv[]){
-    try{
-        auto cli=parse(argc,argv);
-        auto parts=loadDXF(cli.files);
-        auto placed=greedy(parts,cli.W,cli.H,cli.rot);
-        std::ofstream f(cli.out); f<<"part,x_mm,y_mm,angle\n"; for(auto&p:placed) f<<p.id<<","<<std::fixed<<std::setprecision(3)<<p.x<<","<<p.y<<","<<p.ang<<"\n";
-        std::cout<<"placed "<<placed.size()<<"/"<<parts.size()<<" → "<<cli.out<<"\n";
+int main(int argc, char* argv[]) {
+    try {
+        auto cli = parse(argc, argv);
+        auto parts = loadDXF(cli.files);
+        auto placed = greedy(parts, cli.W, cli.H, cli.rot);
+
+        // Экспорт CSV
+        std::ofstream f(cli.out);
+        f << "part,x_mm,y_mm,angle\n";
+        for (auto& p : placed)
+            f << p.id << "," << std::fixed << std::setprecision(3)
+              << p.x << "," << p.y << "," << p.ang << "\n";
+
+        std::cout << "placed " << placed.size() << "/" << parts.size()
+                  << " → " << cli.out << "\n";
+
+        // Экспорт DXF
+        ExportToDXF("output.dxf", parts);
+        std::cout << "DXF exported to output.dxf\n";
+
         return 0;
-    }catch(const std::exception&e){ std::cerr<<"ERR: "<<e.what()<<"\n"; return 1; }}
+
+    } catch (const std::exception& e) {
+        std::cerr << "ERR: " << e.what() << "\n";
+        return 1;
+    }
+}

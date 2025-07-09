@@ -111,6 +111,125 @@ static Path64 approxSpline(const std::vector<PointD>& pts,int segPer=8){
 static constexpr int64_t JOIN_TOL=10000; // coordinate tolerance
 static bool eqPt(const Point64&a,const Point64&b){ return llabs(a.x-b.x)<=JOIN_TOL && llabs(a.y-b.y)<=JOIN_TOL; }
 
+// Small helper to read DXF code/value pairs with single element lookahead
+struct DXFReader{
+    std::ifstream& in;
+    std::string code,value;
+    bool has=false;
+    DXFReader(std::ifstream&f):in(f){}
+    bool next(){
+        if(has){ has=false; return true; }
+        return bool(std::getline(in,code) && std::getline(in,value));
+    }
+    void push(){ has=true; }
+};
+
+// Read pair helper
+static bool expect(DXFReader&rd,const char* need,int seg,const char* what){
+    if(!rd.next()){ std::cerr<<"seg "<<seg<<" unexpected EOF while reading "<<what<<"\n"; return false; }
+    if(rd.code!=need) std::cerr<<"seg "<<seg<<" expected "<<need<<" after "<<what<<" got "<<rd.code<<"\n"; 
+    return true;
+}
+
+// Parse LINE entity
+static bool parseLine(DXFReader&rd,Path64&out,int seg){
+    double x1=0,y1=0,x2=0,y2=0; bool p1=false,p2=false; out.clear();
+    while(rd.next()){
+        if(rd.code=="0"){ rd.push(); break; }
+        if(rd.code=="10"){ x1=std::stod(rd.value); if(expect(rd,"20",seg,"10")) y1=std::stod(rd.value); p1=true; }
+        else if(rd.code=="11"){ x2=std::stod(rd.value); if(expect(rd,"21",seg,"11")) y2=std::stod(rd.value); p2=true; }
+    }
+    if(!p1||!p2){ std::cerr<<"seg "<<seg<<" LINE missing point\n"; return false; }
+    out={{I64(x1),I64(y1)},{I64(x2),I64(y2)}}; return true;
+}
+
+// Parse ARC entity
+static bool parseArc(DXFReader&rd,Path64&out,int seg){
+    PointD cen{0,0}; double radius=0,a1=0,a2=0; bool haveC=false,haveR=false; out.clear();
+    while(rd.next()){
+        if(rd.code=="0"){ rd.push(); break; }
+        if(rd.code=="10"){ cen.x=std::stod(rd.value); if(expect(rd,"20",seg,"10")) cen.y=std::stod(rd.value); haveC=true; }
+        else if(rd.code=="40"){ radius=std::stod(rd.value); haveR=true; }
+        else if(rd.code=="50") a1=std::stod(rd.value);
+        else if(rd.code=="51") a2=std::stod(rd.value);
+    }
+    if(!haveC||!haveR){ std::cerr<<"seg "<<seg<<" ARC missing data\n"; return false; }
+    out=approxArc(cen,radius,a1,a2); return !out.empty();
+}
+
+// Parse CIRCLE entity
+static bool parseCircle(DXFReader&rd,Path64&out,int seg){
+    PointD cen{0,0}; double radius=0; bool haveC=false,haveR=false; out.clear();
+    while(rd.next()){
+        if(rd.code=="0"){ rd.push(); break; }
+        if(rd.code=="10"){ cen.x=std::stod(rd.value); if(expect(rd,"20",seg,"10")) cen.y=std::stod(rd.value); haveC=true; }
+        else if(rd.code=="40"){ radius=std::stod(rd.value); haveR=true; }
+    }
+    if(!haveC||!haveR){ std::cerr<<"seg "<<seg<<" CIRCLE missing data\n"; return false; }
+    out=approxArc(cen,radius,0,360); return true;
+}
+
+// Parse ELLIPSE entity
+static bool parseEllipse(DXFReader&rd,Path64&out,int seg){
+    PointD cen{0,0},maj{0,0}; double ratio=1,a1=0,a2=0; bool haveC=false,haveMaj=false; out.clear();
+    while(rd.next()){
+        if(rd.code=="0"){ rd.push(); break; }
+        if(rd.code=="10"){ cen.x=std::stod(rd.value); if(expect(rd,"20",seg,"10")) cen.y=std::stod(rd.value); haveC=true; }
+        else if(rd.code=="11"){ maj.x=std::stod(rd.value); if(expect(rd,"21",seg,"11")) maj.y=std::stod(rd.value); haveMaj=true; }
+        else if(rd.code=="40") ratio=std::stod(rd.value);
+        else if(rd.code=="41") a1=std::stod(rd.value)*180.0/M_PI;
+        else if(rd.code=="42") a2=std::stod(rd.value)*180.0/M_PI;
+    }
+    if(!haveC||!haveMaj){ std::cerr<<"seg "<<seg<<" ELLIPSE missing data\n"; return false; }
+    out=approxEllipse(cen,maj,ratio,a1,a2); return !out.empty();
+}
+
+// Parse SPLINE entity using fit points only
+static bool parseSpline(DXFReader&rd,Path64&out,int seg){
+    std::vector<PointD> pts; out.clear();
+    while(rd.next()){
+        if(rd.code=="0"){ rd.push(); break; }
+        if(rd.code=="10"){ double x=std::stod(rd.value); if(expect(rd,"20",seg,"10")) { double y=std::stod(rd.value); pts.push_back({x,y}); } }
+    }
+    if(pts.empty()){ std::cerr<<"seg "<<seg<<" SPLINE no fit points\n"; return false; }
+    out=approxSpline(pts); return !out.empty();
+}
+
+// Parse LWPOLYLINE entity
+static bool parseLWPolyline(DXFReader&rd,Path64&out,bool&closed,int seg){
+    out.clear(); closed=false; bool ok=true;
+    while(rd.next()){
+        if(rd.code=="0"){ rd.push(); break; }
+        if(rd.code=="70") closed=(std::stoi(rd.value)&1);
+        else if(rd.code=="10"){ double x=std::stod(rd.value); if(expect(rd,"20",seg,"10")) { double y=std::stod(rd.value); out.push_back({I64(x),I64(y)}); } }
+    }
+    if(out.empty()){ std::cerr<<"seg "<<seg<<" LWPOLYLINE empty\n"; ok=false; }
+    return ok && !out.empty();
+}
+
+// Parse classic POLYLINE entity (sequence of VERTEX)
+static bool parsePolyline(DXFReader&rd,Path64&out,int seg){
+    out.clear();
+    while(rd.next()){
+        if(rd.code=="0" && rd.value=="VERTEX"){
+            double x=0,y=0; bool have=false;
+            while(rd.next()){
+                if(rd.code=="0"){ rd.push(); break; }
+                if(rd.code=="10"){ x=std::stod(rd.value); if(expect(rd,"20",seg,"10")) y=std::stod(rd.value); have=true; }
+            }
+            if(have) out.push_back({I64(x),I64(y)});
+        }else if(rd.code=="0" && rd.value=="SEQEND"){
+            break;
+        }else if(rd.code=="0"){
+            rd.push();
+            break;
+        }
+    }
+    if(out.empty()){ std::cerr<<"seg "<<seg<<" POLYLINE empty\n"; return false; }
+    return true;
+}
+
+
 // Connect line/arc segments into closed rings
 static Paths64 connectSegments(std::vector<Path64> segs){
     Paths64 out;
@@ -164,21 +283,43 @@ static Paths64 connectSegments(std::vector<Path64> segs){
 static std::vector<RawPart> loadDXF(const std::vector<std::string>& files){
     std::vector<RawPart> parts;
     for(size_t idx=0; idx<files.size(); ++idx){
-        std::ifstream fin(files[idx]); if(!fin) throw std::runtime_error("open "+files[idx]);
-        std::string c,v; bool inEnt=false; auto nxt=[&](){ return bool(std::getline(fin,c)&&std::getline(fin,v)); };
-        std::vector<Path64> rings,segs; Path64 cur; bool closed=false; PointD center{0,0},maj{0,0}; double radius=0,ratio=1,a1=0,a2=0; std::vector<PointD> fit;
-        while(nxt()){
-            if(c=="0"&&v=="SECTION"){ nxt(); inEnt=(c=="2"&&v=="ENTITIES"); continue; }
-            if(!inEnt||c!="0") continue;
-            if(v=="LWPOLYLINE"){ cur.clear(); closed=false; while(nxt()){ if(c=="0") break; if(c=="70") closed=(std::stoi(v)&1); else if(c=="10"){ double x=std::stod(v); nxt(); double y=std::stod(v); cur.push_back({I64(x),I64(y)}); } } if(closed) rings.push_back(cur); else segs.push_back(cur); }
-            else if(v=="LINE"){ double x1=0,y1=0,x2=0,y2=0; while(nxt()){ if(c=="0") break; if(c=="10"){ x1=std::stod(v); nxt(); y1=std::stod(v); } else if(c=="11"){ x2=std::stod(v); nxt(); y2=std::stod(v); }} Path64 lineSeg; lineSeg.push_back({I64(x1),I64(y1)}); lineSeg.push_back({I64(x2),I64(y2)}); segs.push_back(lineSeg); std::cerr << "LINE  (" << x1 << "," << y1 << ") -> (" << x2 << "," << y2 << ")\n";}
-            else if(v=="ARC"){ center=PointD{0,0}; radius=0;a1=0;a2=0; while(nxt()){ if(c=="0") break; if(c=="10"){ center.x=std::stod(v); nxt(); center.y=std::stod(v); } else if(c=="40") radius=std::stod(v); else if(c=="50") a1=std::stod(v); else if(c=="51") a2=std::stod(v); } segs.push_back(approxArc(center,radius,a1,a2)); }
-            else if(v=="CIRCLE"){ center=PointD{0,0}; radius=0; while(nxt()){ if(c=="0") break; if(c=="10"){ center.x=std::stod(v); nxt(); center.y=std::stod(v); } else if(c=="40") radius=std::stod(v); } segs.push_back(approxArc(center,radius,0,360)); }
-            else if(v=="ELLIPSE"){ center=PointD{0,0}; maj=PointD{0,0}; ratio=1;a1=0;a2=0; while(nxt()){ if(c=="0") break; if(c=="10"){ center.x=std::stod(v); nxt(); center.y=std::stod(v); } else if(c=="11"){ maj.x=std::stod(v); nxt(); maj.y=std::stod(v); } else if(c=="40") ratio=std::stod(v); else if(c=="41") a1=std::stod(v)*180.0/M_PI; else if(c=="42") a2=std::stod(v)*180.0/M_PI; } segs.push_back(approxEllipse(center,maj,ratio,a1,a2)); }
-            else if(v=="SPLINE"){ fit.clear(); while(nxt()){ if(c=="0") break; if(c=="10"){ PointD p; p.x=std::stod(v); nxt(); p.y=std::stod(v); fit.push_back(p); } } if(!fit.empty()) segs.push_back(approxSpline(fit)); }
-            else if(v=="POLYLINE"){ cur.clear(); while(nxt()){ if(c=="0"&&v=="VERTEX"){ PointD p; while(nxt()){ if(c=="0") break; if(c=="10"){ p.x=std::stod(v); nxt(); p.y=std::stod(v); } } cur.push_back({I64(p.x),I64(p.y)}); if(c!="0") break; } if(c=="0"&&v=="SEQEND") break; } if(!cur.empty()) segs.push_back(cur); }
+        std::ifstream fin(files[idx]);
+        if(!fin) throw std::runtime_error("open "+files[idx]);
+
+        DXFReader rd(fin);
+        bool inEnt=false;
+        std::vector<Path64> rings,segs;
+        int segNo=0;
+
+        while(rd.next()){
+            if(rd.code=="0" && rd.value=="SECTION"){
+                if(rd.next() && rd.code=="2") inEnt=(rd.value=="ENTITIES");
+                continue;
+            }
+            if(!inEnt || rd.code!="0") continue;
+
+            Path64 tmp; bool closed=false;
+            if(rd.value=="LWPOLYLINE"){
+                if(parseLWPolyline(rd,tmp,closed,segNo++))
+                    (closed?rings:segs).push_back(std::move(tmp));
+            }else if(rd.value=="LINE"){
+                if(parseLine(rd,tmp,segNo++)) segs.push_back(std::move(tmp));
+            }else if(rd.value=="ARC"){
+                if(parseArc(rd,tmp,segNo++)) segs.push_back(std::move(tmp));
+            }else if(rd.value=="CIRCLE"){
+                if(parseCircle(rd,tmp,segNo++)) segs.push_back(std::move(tmp));
+            }else if(rd.value=="ELLIPSE"){
+                if(parseEllipse(rd,tmp,segNo++)) segs.push_back(std::move(tmp));
+            }else if(rd.value=="SPLINE"){
+                if(parseSpline(rd,tmp,segNo++)) segs.push_back(std::move(tmp));
+            }else if(rd.value=="POLYLINE"){
+                if(parsePolyline(rd,tmp,segNo++)) segs.push_back(std::move(tmp));
+            }
         }
-        auto joined=connectSegments(segs);std::cerr << "DXF debug  "<< files[idx] << "  segs="   << segs.size() << "  joined=" << joined.size() << "  rings="  << rings.size() << '\n'; rings.insert(rings.end(),joined.begin(),joined.end());
+
+        auto joined=connectSegments(segs);
+        std::cerr<<"DXF debug  "<<files[idx]<<"  segs="<<segs.size() <<"  joined="<<joined.size()<<"  rings="<<rings.size()<<"\n";
+        rings.insert(rings.end(),joined.begin(),joined.end());
         if(rings.empty()) throw std::runtime_error("no rings in "+files[idx]);
         std::sort(rings.begin(),rings.end(),[](const Path64&a,const Path64&b){return std::abs(Area(a))>std::abs(Area(b));});
         if(Area(rings[0])<0) ReversePath(rings[0]);

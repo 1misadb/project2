@@ -583,7 +583,8 @@ static Paths64 connectSegments(const std::vector<Path64>& segs)
 std::map<std::string, int> dxfStats;
 std::vector<std::string> unsupportedEntities;
 // Parse DXF entities into polygons
-static std::vector<RawPart> loadDXF(const std::vector<std::string>& files){
+static std::vector<RawPart> loadDXF(const std::vector<std::string>& files,
+                                    bool joinSegments){
     std::vector<RawPart> parts;
     for(size_t idx=0; idx<files.size(); ++idx){
         std::ifstream fin(files[idx]);
@@ -645,17 +646,20 @@ static std::vector<RawPart> loadDXF(const std::vector<std::string>& files){
         std::cerr << "================================\n";
         }
 
-        auto joined = connectSegments(segs);
+        Paths64 joined = joinSegments ? connectSegments(segs)
+                                      : Paths64(segs.begin(), segs.end());
         std::cerr << "DXF debug  " << files[idx]
                 << "  segs=" << segs.size()
                 << "  joined=" << joined.size()
-                << "  rings=" << rings.size() << "\n";
+                << "  rings=" << rings.size()
+                << "  joinSegments=" << (joinSegments?"on":"off")
+                << "\n";
         // Диагностика: первая точка первого path
         if (!joined.empty() && !joined[0].empty()) {
             auto pt = joined[0][0];
             std::cerr << " first pt: " << Dbl(pt.x) << ", " << Dbl(pt.y) << "\n";
         }
-        // Добавляем все замкнутые контуры из joined
+        // Добавляем все контуры из joined
         rings.insert(rings.end(), joined.begin(), joined.end());
 
         // Главное: если rings всё ещё пуст, копируем все контуры из joined!
@@ -774,6 +778,7 @@ struct CLI{
     std::vector<std::string> files;
     std::vector<int> nums;
     int num = 1;
+    bool joinSegments = false;
 };
 
 // Display usage information
@@ -782,8 +787,9 @@ static void printHelp(const char* exe){
               << "Options:\n"
               << "  -s, --sheet WxH    Sheet size in mm\n"
               << "  -r, --rot N       Rotation step in degrees (default 10)\n"
-              << "  -o, --out FILE    Output CSV file (default layout.csv)\n"
-              << "  -h, --help        Show this help message\n";
+             << "  -o, --out FILE    Output CSV file (default layout.csv)\n"
+             << "  -j, --join-segments  Join broken segments into loops\n"
+             << "  -h, --help        Show this help message\n";
 }
 
 // Parse command line arguments
@@ -804,7 +810,9 @@ static CLI parse(int ac, char** av){
         }else if(a=="-o"||a=="--out"){
             if(i+1>=ac) throw std::runtime_error("missing value for --out");
             c.out = av[++i];
-        }else if(a=="-n"||a=="--num"){ 
+        }else if(a=="-j"||a=="--join-segments"){
+            c.joinSegments = true;
+        }else if(a=="-n"||a=="--num"){
             while (i+1<ac && std::isdigit(av[i+1][0]))
             {
                 c.nums.push_back(std::stoi(av[++i]));
@@ -880,7 +888,7 @@ int main(int argc, char* argv[]) {
         gUnit          = getDxfUnitFactor(ucode);
         std::cerr << "[DXF] INSUNITS=" << ucode
                   << "  (scale=" << gUnit << " mm per DXF unit)\n";
-        auto parts = loadDXF(cli.files);
+        auto parts = loadDXF(cli.files, cli.joinSegments);
         size_t nFile = cli.files.size();
         for(size_t i = 0; i < nFile; ++i){
             int cnt = (i < cli.nums.size()?cli.nums[i] : 1);

@@ -78,9 +78,7 @@ int detectDxfUnits(const std::string& dxf_file) {
 constexpr double SCALE = 1e4;
 constexpr int DEFAULT_ROT_STEP = 10;
 constexpr double TOL_MM = 10.0;                 // base tolerance in mm
-constexpr int64_t TOLERANCE = static_cast<int64_t>(TOL_MM * SCALE + 0.5);
-inline int64_t tol_mm(){ return llround(TOL_MM * gUnit * SCALE); }
-#define TOLERANCE  tol_mm()
+inline int64_t tol_mm() { return llround(TOL_MM * gUnit * SCALE); }
 // Преобразование double → int64 с учетом SCALE
 inline int64_t I64(double v) {          // из мм → int64
     return llround(v * gUnit * SCALE);  // ← добавили gUnit
@@ -193,7 +191,7 @@ static bool eqPt(const Point64& a, const Point64& b)
 {
     int64_t dx = a.x - b.x;
     int64_t dy = a.y - b.y;
-    return (dx * dx + dy * dy) <= TOLERANCE * TOLERANCE;
+    return (dx * dx + dy * dy) <= tol_mm() * tol_mm();
 }
 
 // Euclidean distance between two points
@@ -394,19 +392,19 @@ static bool parseSpline(DXFReader& rd, Path64& out, int segNo)
         std::vector<Vec2> ctrlVec;
         for (auto& p : ctrlPts)
             ctrlVec.push_back({p[0], p[1]});
-        auto poly = approximateSpline(ctrlVec, knotVec, degree, 100);
+        auto poly = approximateSpline(ctrlVec, knotVec, degree, 1000);
         out.insert(out.end(), poly.begin(), poly.end());
     }
-
+    std::cerr << "ctrlPts.size()=" << ctrlPts.size() << ", knotVec.size()=" << knotVec.size() << ", degree=" << degree << '\n';
     // --- Замыкание ---
     if (!out.empty()) {
         if (closed) {
             int64_t dist = distance(out.front(), out.back());
-            if (dist <= TOLERANCE && out.front() != out.back()) {
+            if (dist <= tol_mm() && out.front() != out.back()) {
                 out.push_back(out.front());
                 std::cerr << "[AutoClose] spline " << segNo
                           << " closed (distance=" << Dbl(dist) << " mm)\n";
-            } else if (dist > TOLERANCE) {
+            } else if (dist > tol_mm()) {
                 std::cerr << "[Warn] spline " << segNo
                           << " not closed, gap=" << Dbl(dist) << " mm\n";
             }
@@ -468,7 +466,7 @@ static bool parsePolyline(DXFReader&rd,Path64&out,int seg){
 static Paths64 connectSegments(const std::vector<Path64>& segs)
 {
     using Point = Point64;
-    const int64_t TOL = TOLERANCE;
+    const int64_t TOL = tol_mm();
 
     auto key = [&](const Point& p)
     {
@@ -535,7 +533,7 @@ static Paths64 connectSegments(const std::vector<Path64>& segs)
         if(path.size()>2 && !eqPt(path.front(), path.back()))
         {
             int64_t dist = distance(path.front(), path.back());
-            if(dist <= TOLERANCE)
+            if(dist <= tol_mm())
             {
                 path.push_back(path.front());
                 std::cerr << "[AutoClose] path " << out.size()
@@ -583,7 +581,8 @@ static Paths64 connectSegments(const std::vector<Path64>& segs)
 std::map<std::string, int> dxfStats;
 std::vector<std::string> unsupportedEntities;
 // Parse DXF entities into polygons
-static std::vector<RawPart> loadDXF(const std::vector<std::string>& files){
+static std::vector<RawPart> loadDXF(const std::vector<std::string>& files,
+                                    bool joinSegments){
     std::vector<RawPart> parts;
     for(size_t idx=0; idx<files.size(); ++idx){
         std::ifstream fin(files[idx]);
@@ -645,17 +644,20 @@ static std::vector<RawPart> loadDXF(const std::vector<std::string>& files){
         std::cerr << "================================\n";
         }
 
-        auto joined = connectSegments(segs);
+        Paths64 joined = joinSegments ? connectSegments(segs)
+                                      : Paths64(segs.begin(), segs.end());
         std::cerr << "DXF debug  " << files[idx]
                 << "  segs=" << segs.size()
                 << "  joined=" << joined.size()
-                << "  rings=" << rings.size() << "\n";
+                << "  rings=" << rings.size()
+                << "  joinSegments=" << (joinSegments?"on":"off")
+                << "\n";
         // Диагностика: первая точка первого path
         if (!joined.empty() && !joined[0].empty()) {
             auto pt = joined[0][0];
             std::cerr << " first pt: " << Dbl(pt.x) << ", " << Dbl(pt.y) << "\n";
         }
-        // Добавляем все замкнутые контуры из joined
+        // Добавляем все контуры из joined
         rings.insert(rings.end(), joined.begin(), joined.end());
 
         // Главное: если rings всё ещё пуст, копируем все контуры из joined!
@@ -774,6 +776,7 @@ struct CLI{
     std::vector<std::string> files;
     std::vector<int> nums;
     int num = 1;
+    bool joinSegments = false;
 };
 
 // Display usage information
@@ -782,8 +785,9 @@ static void printHelp(const char* exe){
               << "Options:\n"
               << "  -s, --sheet WxH    Sheet size in mm\n"
               << "  -r, --rot N       Rotation step in degrees (default 10)\n"
-              << "  -o, --out FILE    Output CSV file (default layout.csv)\n"
-              << "  -h, --help        Show this help message\n";
+             << "  -o, --out FILE    Output CSV file (default layout.csv)\n"
+             << "  -j, --join-segments  Join broken segments into loops\n"
+             << "  -h, --help        Show this help message\n";
 }
 
 // Parse command line arguments
@@ -804,7 +808,9 @@ static CLI parse(int ac, char** av){
         }else if(a=="-o"||a=="--out"){
             if(i+1>=ac) throw std::runtime_error("missing value for --out");
             c.out = av[++i];
-        }else if(a=="-n"||a=="--num"){ 
+        }else if(a=="-j"||a=="--join-segments"){
+            c.joinSegments = true;
+        }else if(a=="-n"||a=="--num"){
             while (i+1<ac && std::isdigit(av[i+1][0]))
             {
                 c.nums.push_back(std::stoi(av[++i]));
@@ -880,7 +886,7 @@ int main(int argc, char* argv[]) {
         gUnit          = getDxfUnitFactor(ucode);
         std::cerr << "[DXF] INSUNITS=" << ucode
                   << "  (scale=" << gUnit << " mm per DXF unit)\n";
-        auto parts = loadDXF(cli.files);
+        auto parts = loadDXF(cli.files, cli.joinSegments);
         size_t nFile = cli.files.size();
         for(size_t i = 0; i < nFile; ++i){
             int cnt = (i < cli.nums.size()?cli.nums[i] : 1);

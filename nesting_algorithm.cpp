@@ -29,6 +29,7 @@
 
 #include "clipper3/clipper.h"
 #include "clipper3/clipper.minkowski.h"
+#include <nlohmann/json.hpp>
 double gUnit = 1.0;
 using namespace Clipper2Lib;
 
@@ -697,6 +698,51 @@ static std::vector<RawPart> entitiesToParts(const std::vector<RawEntity>& ents)
     return parts;
 }
 
+// ---------------------------------------------------------------
+// Load parts from JSON file produced by extract_polylines.py
+static std::vector<RawPart> loadPartsFromJson(const std::string& filename)
+{
+    std::ifstream fin(filename);
+    if(!fin)
+        throw std::runtime_error("open "+filename);
+
+    nlohmann::json j;
+    fin >> j;
+    if(!j.is_array())
+        throw std::runtime_error("invalid JSON format in "+filename);
+
+    std::vector<RawPart> parts;
+    for(const auto& path : j)
+    {
+        if(!path.is_array())
+            continue;
+
+        Path64 ring;
+        for(const auto& pt : path)
+        {
+            if(pt.size() < 2) continue;
+            double x = pt[0].get<double>();
+            double y = pt[1].get<double>();
+            ring.emplace_back(I64mm(x), I64mm(y));
+        }
+
+        if(ring.size() < 2) continue;
+
+        Rect64 bb = getBBox(ring);
+        int64_t dx = -bb.left, dy = -bb.bottom;
+        if(dx || dy)
+            for(auto& p : ring){ p.x += dx; p.y += dy; }
+
+        if(ring.front() != ring.back())
+            ring.push_back(ring.front());
+
+        Paths64 rings{ ring };
+        double area_mm2 = std::abs(Area(rings[0])) / (SCALE * SCALE);
+        parts.push_back({ std::move(rings), area_mm2, 0 });
+    }
+    return parts;
+}
+
 
 
 // ───────── orientations ─────────
@@ -755,10 +801,10 @@ static std::vector<Place> greedy(const std::vector<RawPart>&parts,double W,doubl
     auto mm2i = [](double mm){ return static_cast<int64_t>(std::llround(mm * SCALE)); };
     sheet.clear();
     sheet.clear();
-    sheet.emplace_back(0LL,            0LL);
-    sheet.emplace_back(mm2i(W),        0LL);
-    sheet.emplace_back(mm2i(W),        mm2i(H));
-    sheet.emplace_back(0LL,            mm2i(H));
+    sheet.emplace_back(int64_t(0),        int64_t(0));
+    sheet.emplace_back(mm2i(W),          int64_t(0));
+    sheet.emplace_back(mm2i(W),          mm2i(H));
+    sheet.emplace_back(int64_t(0),        mm2i(H));
     std::vector<Paths64> placed; std::vector<Place> out;
     for(size_t i=0;i<ord.size();++i){ bool ok=false; Place best{};
         for(auto &op:orient[i]){
@@ -888,17 +934,9 @@ void ExportPlacedToDXF(const std::string& filename,
 int main(int argc, char* argv[]) {
     try {
         auto cli = parse(argc, argv);
-        int ucode      = detectDxfUnits(cli.files.front());
-        std::cerr << "INSUNITS detected: " << ucode << "  gUnit=" << gUnit << std::endl;
-        gUnit          = getDxfUnitFactor(ucode);
-        std::cerr << "[DXF] INSUNITS=" << ucode
-                  << "  (scale=" << gUnit << " mm per DXF unit)\n";
         std::vector<RawPart> parts;
         for(size_t idx=0; idx<cli.files.size(); ++idx){
-            std::ifstream fin(cli.files[idx]);
-            if(!fin) throw std::runtime_error("open "+cli.files[idx]);
-            auto ents  = parseEntities(fin);
-            auto pvec  = entitiesToParts(ents);
+            auto pvec  = loadPartsFromJson(cli.files[idx]);
             int cnt = (idx < cli.nums.size()? cli.nums[idx] : 1);
             for(int r=0; r<cnt; ++r)
                 for(const auto& base : pvec){

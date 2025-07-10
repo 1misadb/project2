@@ -29,26 +29,66 @@
 
 #include "clipper3/clipper.h"
 #include "clipper3/clipper.minkowski.h"
+double gUnit = 1.0;
 using namespace Clipper2Lib;
 
+static std::string trim(const std::string& s) {
+    size_t start = s.find_first_not_of(" \t\r\n");
+    size_t end = s.find_last_not_of(" \t\r\n");
+    return (start == std::string::npos) ? "" : s.substr(start, end - start + 1);
+}
+
+// ────────── types ──────────
 // ───────── helpers ─────────
 // Rect64: 64-bit integer rectangle
 // Масштаб преобразования мм → int64 (Clipper scale)
+double getDxfUnitFactor(int code) {
+    switch (code) {
+        case 0: return 1.0;       // Не указано, по умолчанию 1
+        case 1: return 25.4;      // Дюймы → мм
+        case 2: return 25.4 * 12; // Футы → мм
+        case 3: return 25.4 * 12 * 5280; // Мили → мм
+        case 4: return 1.0;       // Миллиметры
+        case 5: return 10.0;      // Сантиметры → мм
+        case 6: return 1000.0;    // Метры → мм
+        case 7: return 1000000.0; // Километры → мм
+        case 8: return 0.001;     // Микроны → мм
+        case 9: return 0.0254;    // Милли (mil) → мм
+        default: return 1.0;
+    }
+}
+
+int detectDxfUnits(const std::string& dxf_file) {
+    std::ifstream fin(dxf_file);
+    if (!fin) return 0;
+    std::string code, value;
+    while (std::getline(fin, code) && std::getline(fin, value)) {
+        if (trim(code) == "9" && trim(value) == "$INSUNITS") {
+            if (std::getline(fin, code) && std::getline(fin, value) && trim(code) == "70") {
+                std::string val = trim(value);
+                try { return std::stoi(val); }
+                catch (...) { return 0; }
+            }
+        }
+        if (trim(code) == "0" && trim(value) == "ENDSEC") break;
+    }
+    return 0;
+}
+
 constexpr double SCALE = 1e4;
 constexpr int DEFAULT_ROT_STEP = 10;
-constexpr double TOL_MM = 2.0;                 // base tolerance in mm
+constexpr double TOL_MM = 10.0;                 // base tolerance in mm
 constexpr int64_t TOLERANCE = static_cast<int64_t>(TOL_MM * SCALE + 0.5);
-
+inline int64_t tol_mm(){ return llround(TOL_MM * gUnit * SCALE); }
+#define TOLERANCE  tol_mm()
 // Преобразование double → int64 с учетом SCALE
-inline int64_t I64(double v) {
-    return llround(v * SCALE);
+inline int64_t I64(double v) {          // из мм → int64
+    return llround(v * gUnit * SCALE);  // ← добавили gUnit
 }
 
-// Преобразование int64 → double с учетом SCALE
-inline double Dbl(int64_t v) {
-    return double(v) / SCALE;
+inline double Dbl(int64_t v) {          // из int64 → мм
+    return double(v) / SCALE; // ← делим тоже на gUnit
 }
-
 // Reverse polygon orientation in place
 template <typename T>
 void ReversePath(std::vector<T>& p) {
@@ -149,9 +189,11 @@ static Path64 approxSpline(const std::vector<PointD>& pts,int segPer=8){
 }
 
 // Point comparison within tolerance
-static bool eqPt(const Point64&a,const Point64&b)
+static bool eqPt(const Point64& a, const Point64& b)
 {
-    return llabs(a.x - b.x) <= TOLERANCE && llabs(a.y - b.y) <= TOLERANCE;
+    int64_t dx = a.x - b.x;
+    int64_t dy = a.y - b.y;
+    return (dx * dx + dy * dy) <= TOLERANCE * TOLERANCE;
 }
 
 // Euclidean distance between two points
@@ -183,42 +225,33 @@ static bool expect(DXFReader&rd,const char* need,int seg,const char* what){
 }
 
 // Parse LINE entity
-static bool parseLine(DXFReader& rd, Path64& out, int segNo)
-{
-    double x1=0,y1=0,x2=0,y2=0;
-    bool have_x1=false, have_y1=false, have_x2=false, have_y2=false;
+static bool parseLine(DXFReader& rd, Path64& out, int seg) {
+    double x1=0, y1=0, x2=0, y2=0;
+    bool have_x1 = false, have_y1 = false, have_x2 = false, have_y2 = false;
     out.clear();
 
     while (rd.next()) {
-        if (rd.code == "0") {          // дошли до начала следующей entity
-            rd.push();                 // вернуть look-ahead
-            break;
-        }
+        if (rd.code == "0") { rd.push(); break; }
 
-        switch (std::stoi(rd.code))
-        {
-        case 10: x1 = std::stod(rd.value); have_x1 = true; break;
-        case 20: y1 = std::stod(rd.value); have_y1 = true; break;
-        case 11: x2 = std::stod(rd.value); have_x2 = true; break;
-        case 21: y2 = std::stod(rd.value); have_y2 = true; break;
-        default: /* z-координаты, цвета, прочий мусор пропускаем */ break;
-        }
+        if (rd.code == "10") { x1 = std::stod(rd.value); have_x1 = true; }
+        else if (rd.code == "20") { y1 = std::stod(rd.value); have_y1 = true; }
+        else if (rd.code == "11") { x2 = std::stod(rd.value); have_x2 = true; }
+        else if (rd.code == "21") { y2 = std::stod(rd.value); have_y2 = true; }
+        // остальные коды просто игнорируем!
     }
 
-    // «Пустые» или битые LINE просто игнорируем, но не валим весь файл
-    if (!(have_x1 && have_y1 && have_x2 && have_y2)) {
-        std::cerr << "[skip] seg " << segNo
-                  << " LINE: incomplete (" 
-                  << (have_x1?"":" x1")
-                  << (have_y1?"":" y1")
-                  << (have_x2?"":" x2")
-                  << (have_y2?"":" y2") << " )\n";
-        return false;          // ничего не добавляем в segs
+    if (!have_x1 || !have_y1 || !have_x2 || !have_y2) {
+        std::cerr << "seg " << seg << " LINE missing coordinate(s): "
+                  << (!have_x1 ? "x1 " : "") << (!have_y1 ? "y1 " : "")
+                  << (!have_x2 ? "x2 " : "") << (!have_y2 ? "y2 " : "") << "\n";
+        return false;
     }
 
-    out = { {I64(x1), I64(y1)}, {I64(x2), I64(y2)} };
+    out.push_back({I64(x1), I64(y1)});
+    out.push_back({I64(x2), I64(y2)});
     return true;
 }
+
 
 // Parse ARC entity
 static bool parseArc(DXFReader&rd,Path64&out,int seg){
@@ -546,12 +579,7 @@ static Paths64 connectSegments(const std::vector<Path64>& segs)
     return out;
 }
 
-// Trim leading and trailing whitespace (helper for DXF group codes)
-static std::string trim(const std::string& s) {
-    size_t start = s.find_first_not_of(" \t\r\n");
-    size_t end = s.find_last_not_of(" \t\r\n");
-    return (start == std::string::npos) ? "" : s.substr(start, end - start + 1);
-}
+
 std::map<std::string, int> dxfStats;
 std::vector<std::string> unsupportedEntities;
 // Parse DXF entities into polygons
@@ -648,7 +676,7 @@ static std::vector<RawPart> loadDXF(const std::vector<std::string>& files){
         for (size_t i = 0; i < rings.size(); ++i) {
             std::cerr << "rings[" << i << "]:";
             for (const auto& pt : rings[i])
-                std::cerr << " (" << pt.x << "," << pt.y << ")";
+                std::cerr << " (" << Dbl(pt.x) << "," << Dbl(pt.y) << ")";
             std::cerr << "\n";
         }
         // Далее обычное смещение к (0,0)
@@ -744,6 +772,8 @@ struct CLI{
     int rot = DEFAULT_ROT_STEP;
     std::string out = "layout.csv";
     std::vector<std::string> files;
+    std::vector<int> nums;
+    int num = 1;
 };
 
 // Display usage information
@@ -774,6 +804,12 @@ static CLI parse(int ac, char** av){
         }else if(a=="-o"||a=="--out"){
             if(i+1>=ac) throw std::runtime_error("missing value for --out");
             c.out = av[++i];
+        }else if(a=="-n"||a=="--num"){ 
+            while (i+1<ac && std::isdigit(av[i+1][0]))
+            {
+                c.nums.push_back(std::stoi(av[++i]));
+            }
+            
         }else if(a.size() && a[0]=='-'){
             throw std::runtime_error("unknown option " + a);
         }else{
@@ -805,13 +841,55 @@ void ExportToDXF(const std::string& filename, const std::vector<RawPart>& parts)
 
     f << "0\nENDSEC\n0\nEOF\n";
 }
+std::string PlacedPolylineToDXF(const Path64& path, double x, double y, double angle_deg) {
+    std::ostringstream ss;
+    double angle_rad = angle_deg * M_PI / 180.0;
+    double s = sin(angle_rad), c = cos(angle_rad);
+    ss << "0\nLWPOLYLINE\n8\n0\n90\n" << path.size() << "\n70\n1\n";
+    for (const auto& p : path) {
+        // Применяем поворот и сдвиг!
+        double px = Dbl(p.x), py = Dbl(p.y);
+        double nx = c * px - s * py + x;
+        double ny = s * px + c * py + y;
+        ss << "10\n" << nx << "\n20\n" << ny << "\n";
+    }
+    return ss.str();
+}
 
+// Экспорт всей раскладки в DXF:
+void ExportPlacedToDXF(const std::string& filename,
+                       const std::vector<RawPart>& parts,
+                       const std::vector<Place>& placed)
+{
+    std::ofstream f(filename);
+    f << "0\nSECTION\n2\nENTITIES\n";
+    for (const auto& pl : placed) {
+        const RawPart& part = parts[pl.id];
+        for (const auto& ring : part.rings) {
+            f << PlacedPolylineToDXF(ring, pl.x, pl.y, pl.ang);
+        }
+    }
+    f << "0\nENDSEC\n0\nEOF\n";
+}
 // ───────── main ─────────
-// Entry point
 int main(int argc, char* argv[]) {
     try {
         auto cli = parse(argc, argv);
+        int ucode      = detectDxfUnits(cli.files.front());
+        std::cerr << "INSUNITS detected: " << ucode << "  gUnit=" << gUnit << std::endl;
+        gUnit          = getDxfUnitFactor(ucode);
+        std::cerr << "[DXF] INSUNITS=" << ucode
+                  << "  (scale=" << gUnit << " mm per DXF unit)\n";
         auto parts = loadDXF(cli.files);
+        size_t nFile = cli.files.size();
+        for(size_t i = 0; i < nFile; ++i){
+            int cnt = (i < cli.nums.size()?cli.nums[i] : 1);
+            for(int j = 0; j < cnt; ++j){
+                RawPart p = parts[i];
+                p.id = int(parts.size());
+                parts.push_back(p);
+            }
+        }
         auto placed = greedy(parts, cli.W, cli.H, cli.rot);
 
         // Экспорт CSV
@@ -824,9 +902,13 @@ int main(int argc, char* argv[]) {
         std::cout << "placed " << placed.size() << "/" << parts.size()
                   << " → " << cli.out << "\n";
 
-        // Экспорт DXF
+        // Экспорт оригинальных контуров (можно оставить для сравнения)
         ExportToDXF("output.dxf", parts);
         std::cout << "DXF exported to output.dxf\n";
+
+        // Экспорт размещённой раскладки!
+        ExportPlacedToDXF("layout.dxf", parts, placed);
+        std::cout << "Placed DXF exported to layout.dxf\n";
 
         return 0;
 

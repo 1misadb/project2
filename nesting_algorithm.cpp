@@ -77,8 +77,8 @@ int detectDxfUnits(const std::string& dxf_file) {
 
 constexpr double SCALE = 1e4;
 constexpr int DEFAULT_ROT_STEP = 10;
-constexpr double TOL_MM = 10.0;                 // base tolerance in mm
-inline int64_t tol_mm() { return llround(TOL_MM * gUnit * SCALE); }
+constexpr double TOL_MM = 1.0;                 // base tolerance in mm
+inline int64_t tol_mm() { return llround(TOL_MM * SCALE); }
 // Преобразование double → int64 с учетом SCALE
 inline int64_t I64(double v) {          // из мм → int64
     return llround(v * gUnit * SCALE);  // ← добавили gUnit
@@ -148,6 +148,20 @@ static bool overlap(const Paths64&a,const Paths64&b){
 
 // ───────── DXF mini loader ─────────
 struct RawPart{ Paths64 rings; double area=0; int id=0; };
+
+// New raw entity representation from DXF
+struct RawEntity{
+    std::string type;                                             // DXF entity type
+    std::vector<std::pair<double,double>> pts;                    // polyline points in mm
+    std::vector<std::vector<std::pair<double,double>>> extra;     // reserved for blocks etc
+};
+
+// Fallback spline → polyline conversion (simply connect control points)
+static std::vector<std::pair<double,double>>
+splineToPolylineFallback(const std::vector<std::pair<double,double>>& ctrlPts)
+{
+    return ctrlPts;
+}
 
 // Geometry helpers ------------------------------------------------------
 
@@ -577,144 +591,120 @@ static Paths64 connectSegments(const std::vector<Path64>& segs)
     return out;
 }
 
+// ---------------------------------------------------------------------------
+// Minimal DXF entity parser returning RawEntity list
+static std::vector<RawEntity> parseEntities(std::ifstream& fin){
+    std::vector<RawEntity> out;
+    DXFReader rd(fin);
+    bool inEnt = false;
+    while(rd.next()){
+        if(trim(rd.code)=="0" && rd.value=="SECTION"){
+            if(rd.next() && trim(rd.code)=="2")
+                inEnt = (rd.value=="ENTITIES");
+            continue;
+        }
+        if(trim(rd.code)=="0" && rd.value=="ENDSEC"){ inEnt=false; continue; }
+        if(!inEnt || trim(rd.code)!="0") continue;
 
-std::map<std::string, int> dxfStats;
-std::vector<std::string> unsupportedEntities;
-// Parse DXF entities into polygons
-static std::vector<RawPart> loadDXF(const std::vector<std::string>& files,
-                                    bool joinSegments){
-    std::vector<RawPart> parts;
-    for(size_t idx=0; idx<files.size(); ++idx){
-        std::ifstream fin(files[idx]);
-        if(!fin) throw std::runtime_error("open "+files[idx]);
-        
-        DXFReader rd(fin);
-        bool inEnt = false;
-        std::vector<Path64> rings, segs;
-        int segNo = 0;
-        int splineNo = 0;
-        while(rd.next()) {
-            dxfStats[rd.value]++;
-            // Начало новой секции
-            if(trim(rd.code) == "0" && rd.value == "SECTION") {
-                if(rd.next() && trim(rd.code) == "2")
-                    inEnt = (rd.value == "ENTITIES");
-                continue;
+        std::string etype = rd.value;
+        RawEntity ent; ent.type = etype; Path64 tmp; bool closed=false;
+        try{
+            if(etype=="LWPOLYLINE"){
+                if(parseLWPolyline(rd,tmp,closed,0))
+                    for(auto&p:tmp) ent.pts.push_back({Dbl(p.x),Dbl(p.y)});
+            }else if(etype=="LINE"){
+                if(parseLine(rd,tmp,0))
+                    for(auto&p:tmp) ent.pts.push_back({Dbl(p.x),Dbl(p.y)});
+            }else if(etype=="ARC"){
+                if(parseArc(rd,tmp,0))
+                    for(auto&p:tmp) ent.pts.push_back({Dbl(p.x),Dbl(p.y)});
+            }else if(etype=="CIRCLE"){
+                if(parseCircle(rd,tmp,0))
+                    for(auto&p:tmp) ent.pts.push_back({Dbl(p.x),Dbl(p.y)});
+            }else if(etype=="ELLIPSE"){
+                if(parseEllipse(rd,tmp,0))
+                    for(auto&p:tmp) ent.pts.push_back({Dbl(p.x),Dbl(p.y)});
+            }else if(etype=="SPLINE"){
+                if(parseSpline(rd,tmp,0))
+                    for(auto&p:tmp) ent.pts.push_back({Dbl(p.x),Dbl(p.y)});
+            }else if(etype=="POLYLINE"){
+                if(parsePolyline(rd,tmp,0))
+                    for(auto&p:tmp) ent.pts.push_back({Dbl(p.x),Dbl(p.y)});
+            }else if(etype=="INSERT"){
+                std::cerr<<"[WARN] INSERT entity encountered, not expanded.\n";
             }
-            // Конец секции — просто сбрасываем флаг!
-            if(trim(rd.code) == "0" && rd.value == "ENDSEC") {
-                inEnt = false;
-                continue;
-            }
-            // Обрабатываем только объекты в секции ENTITIES
-            if(!inEnt || trim(rd.code) != "0") continue;
-
-            std::cerr << "ENTITY code=" << rd.code << " value=" << rd.value << "\n";
-            Path64 tmp; bool closed = false;
-            if(rd.value == "LWPOLYLINE") {
-                if(parseLWPolyline(rd, tmp, closed, segNo++))
-                    (closed ? rings : segs).push_back(std::move(tmp));
-            } else if(rd.value == "LINE") {
-                if(parseLine(rd, tmp, segNo++)) segs.push_back(std::move(tmp));
-            } else if(rd.value == "ARC") {
-                if(parseArc(rd, tmp, segNo++)) segs.push_back(std::move(tmp));
-            } else if(rd.value == "CIRCLE") {
-                if(parseCircle(rd, tmp, segNo++)) segs.push_back(std::move(tmp));
-            } else if(rd.value == "ELLIPSE") {
-                if(parseEllipse(rd, tmp, segNo++)) segs.push_back(std::move(tmp));
-            } else if(rd.value == "SPLINE") {
-                std::cerr << "== SPLINE #" << splineNo << " ==\n";
-                if(parseSpline(rd, tmp, segNo++)) segs.push_back(std::move(tmp));
-                splineNo++;
-            } else if(rd.value == "POLYLINE") {
-                if(parsePolyline(rd, tmp, segNo++)) segs.push_back(std::move(tmp));
-            }
-            std::cerr << "\n======= DXF ENTITY STATS =======\n";
-        for (const auto& p : dxfStats) {
-            std::cerr << "  " << p.first << ": " << p.second << "\n";
+        }catch(...){
+            std::cerr << "[WARN] Exception parsing "<<etype<<"\n";
         }
-
-        if (!unsupportedEntities.empty()) {
-            std::cerr << "\n!!! UNSUPPORTED ENTITIES DETECTED !!!\n";
-            std::map<std::string, int> unsupportedCount;
-            for (const auto& e : unsupportedEntities) unsupportedCount[e]++;
-            for (const auto& p : unsupportedCount)
-                std::cerr << "  " << p.first << ": " << p.second << "\n";
-        }
-        std::cerr << "================================\n";
-        }
-
-        Paths64 joined = joinSegments ? connectSegments(segs)
-                                      : Paths64(segs.begin(), segs.end());
-        std::cerr << "DXF debug  " << files[idx]
-                << "  segs=" << segs.size()
-                << "  joined=" << joined.size()
-                << "  rings=" << rings.size()
-                << "  joinSegments=" << (joinSegments?"on":"off")
-                << "\n";
-        // Диагностика: первая точка первого path
-        if (!joined.empty() && !joined[0].empty()) {
-            auto pt = joined[0][0];
-            std::cerr << " first pt: " << Dbl(pt.x) << ", " << Dbl(pt.y) << "\n";
-        }
-        // Добавляем все контуры из joined
-        rings.insert(rings.end(), joined.begin(), joined.end());
-
-        // Главное: если rings всё ещё пуст, копируем все контуры из joined!
-        if (rings.empty() && !joined.empty())
-            rings = joined;
-        if (rings.empty()) throw std::runtime_error("no rings in " + files[idx]);
-        // Диагностика: площадь каждого контура
-        for (size_t i = 0; i < rings.size(); ++i)
-            std::cerr << "rings[" << i << "].Area=" << Area(rings[i]) << "\n";
-        std::sort(rings.begin(), rings.end(),
-            [](const Path64 &a, const Path64 &b) {
-                return std::abs(Area(a)) > std::abs(Area(b));
-            });
-        if (Area(rings[0]) < 0) ReversePath(rings[0]);
-        for (size_t i = 1; i < rings.size(); ++i)
-            if (Area(rings[i]) > 0) ReversePath(rings[i]);
-        // Вот здесь выводим точки для каждой фигуры!
-        for (size_t i = 0; i < rings.size(); ++i) {
-            std::cerr << "rings[" << i << "]:";
-            for (const auto& pt : rings[i])
-                std::cerr << " (" << Dbl(pt.x) << "," << Dbl(pt.y) << ")";
-            std::cerr << "\n";
-        }
-        // Далее обычное смещение к (0,0)
-        Rect64 bb = getBBox(rings);
-        int64_t dx = -bb.left, dy = -bb.bottom;
-        if (dx || dy)
-            for (auto &path : rings)
-                for (auto &pt : path) { pt.x += dx; pt.y += dy; }
-        // Диагностика: финальный bbox
-        Rect64 bb_mm = getBBox(rings);
-        std::cerr << " part " << idx
-                << " bbox = " << Dbl(bb_mm.right - bb_mm.left)
-                << " × " << Dbl(bb_mm.top - bb_mm.bottom) << " mm\n"
-                << " bottom=" << Dbl(bb_mm.bottom)
-                << " top=" << Dbl(bb_mm.top) << "\n";
-        // Добавляем деталь в parts
-        parts.push_back({rings, std::abs(Area(rings[0])) / (SCALE * SCALE), int(idx)});
-        
-
+        if(!ent.pts.empty()) out.push_back(std::move(ent));
     }
+    return out;
+}
+
+// Convert RawEntity → RawPart (single closed polyline)
+// ───────── helpers ──────────────────────────────────────────────────
+//  int64 ← мм  (SCALE уже учтён, gUnit - нет, т.к. RawEntity.pts = мм)
+static inline std::int64_t I64mm(double mm)
+{
+    return static_cast<std::int64_t>( std::llround(mm * SCALE) );
+}
+
+// ───────── RawEntity → RawPart ──────────────────────────────────────
+static RawPart entityToPart(const RawEntity& e)
+{
+    Path64 ring; ring.reserve(e.pts.size());
+    for (auto [x,y] : e.pts)                    // mm → int64 (без gUnit!)
+        ring.push_back({ llround(x * SCALE), llround(y * SCALE) });
+
+    // ─── поднимаем в (0,0) ───────────────────────────
+    Rect64 bb = getBBox(ring);
+    std::cerr << "BBox BEFORE shift: "
+          << Dbl(bb.left) << "," << Dbl(bb.bottom)
+          << " to " << Dbl(bb.right) << "," << Dbl(bb.top) << "\n";
+    const int64_t dx = -bb.left, dy = -bb.bottom;
+    if (dx || dy)
+        for (auto &pt : ring) { pt.x += dx; pt.y += dy; }
+
+    if (ring.size() > 1 && ring.front() != ring.back())
+        ring.push_back(ring.front());
+
+    Paths64 rings{ ring };
+    double area_mm2 = std::abs(Area(rings[0])) / (SCALE * SCALE);
+    return { rings, area_mm2, 0 };
+}
+
+static std::vector<RawPart> entitiesToParts(const std::vector<RawEntity>& ents)
+{
+    std::vector<RawPart> parts;
+    parts.reserve(ents.size());
+
+    for (const auto& e : ents)
+        parts.emplace_back( entityToPart(e) );
+
     return parts;
 }
+
+
 
 // ───────── orientations ─────────
 struct Orient{ Paths64 poly; Rect64 bb; int id; int ang; };
 
 // Rotate polygon set using sine and cosine
-static Paths64 rot(const Paths64&src,double s,double c){
+static Paths64 rot(const Paths64& src, double s, double c) {
     Paths64 out; out.reserve(src.size());
-    for(const auto&ring:src){ Path64 r; r.reserve(ring.size());
-        for(auto pt:ring){ double x=Dbl(pt.x), y=Dbl(pt.y); r.push_back({I64(x*c - y*s), I64(x*s + y*c)}); }
+    for (const auto& ring : src) {
+        Path64 r; r.reserve(ring.size());
+        for (auto pt : ring) {
+            double x = Dbl(pt.x);     // мм
+            double y = Dbl(pt.y);     // мм
+            // mm → int64   (без gUnit!)
+            r.push_back({ I64mm(x * c - y * s),
+                          I64mm(x * s + y * c) });
+        }
         out.push_back(std::move(r));
     }
     return out;
 }
-
 // Precompute rotated variants for each part
 static std::vector<std::vector<Orient>> makeOrient(const std::vector<RawPart>&parts,int step){
     std::vector<std::vector<Orient>> all;
@@ -749,14 +739,18 @@ static std::vector<Place> greedy(const std::vector<RawPart>&parts,double W,doubl
     auto orient=makeOrient(ord,step);
     Path64 sheet;
     sheet.reserve(4);
-    sheet.emplace_back(int64_t(0), int64_t(0));
-    sheet.emplace_back(I64(W), int64_t(0));
-    sheet.emplace_back(I64(W), I64(H));
-    sheet.emplace_back(int64_t(0), I64(H));
+    auto mm2i = [](double mm){ return static_cast<int64_t>(std::llround(mm * SCALE)); };
+    sheet.clear();
+    sheet.clear();
+    sheet.emplace_back(0LL,            0LL);
+    sheet.emplace_back(mm2i(W),        0LL);
+    sheet.emplace_back(mm2i(W),        mm2i(H));
+    sheet.emplace_back(0LL,            mm2i(H));
     std::vector<Paths64> placed; std::vector<Place> out;
     for(size_t i=0;i<ord.size();++i){ bool ok=false; Place best{};
         for(auto &op:orient[i]){
-            std::vector<Point64> cand={{0,0}}; for(auto&pp:placed) for(auto&pt:pp[0]) cand.push_back(pt);
+            std::vector<Point64> cand = { Point64{ 0LL, 0LL } };
+            for(auto&pp:placed) for(auto&pt:pp[0]) cand.push_back(pt);
             for(auto c:cand){ Rect64 bb=op.bb; bb.left+=c.x; bb.right+=c.x; bb.bottom+=c.y; bb.top+=c.y;
                 if(bb.right>sheet[2].x||bb.top>sheet[2].y||bb.left<0||bb.bottom<0) continue;
                 Paths64 sh; sh.reserve(op.poly.size()); for(auto&ring:op.poly){ Path64 r; r.reserve(ring.size()); for(auto pt:ring) r.push_back({pt.x+c.x, pt.y+c.y}); sh.push_back(std::move(r)); }
@@ -886,14 +880,28 @@ int main(int argc, char* argv[]) {
         gUnit          = getDxfUnitFactor(ucode);
         std::cerr << "[DXF] INSUNITS=" << ucode
                   << "  (scale=" << gUnit << " mm per DXF unit)\n";
-        auto parts = loadDXF(cli.files, cli.joinSegments);
-        size_t nFile = cli.files.size();
-        for(size_t i = 0; i < nFile; ++i){
-            int cnt = (i < cli.nums.size()?cli.nums[i] : 1);
-            for(int j = 0; j < cnt; ++j){
-                RawPart p = parts[i];
-                p.id = int(parts.size());
-                parts.push_back(p);
+        std::vector<RawPart> parts;
+        for(size_t idx=0; idx<cli.files.size(); ++idx){
+            std::ifstream fin(cli.files[idx]);
+            if(!fin) throw std::runtime_error("open "+cli.files[idx]);
+            auto ents  = parseEntities(fin);
+            auto pvec  = entitiesToParts(ents);
+            int cnt = (idx < cli.nums.size()? cli.nums[idx] : 1);
+            for(int r=0; r<cnt; ++r)
+                for(const auto& base : pvec){
+                    RawPart p = base;
+                    p.id = int(parts.size());
+                    parts.push_back(p);
+                }
+            for (size_t i = 0; i < parts.size(); ++i) {
+                std::cerr << "[PART #" << i << "] points: ";
+                for (auto& path : parts[i].rings)
+                    for (auto& p : path)
+                        std::cerr << "(" << Dbl(p.x) << "," << Dbl(p.y) << ") ";
+                std::cerr << "\n";
+                std::cerr << "  bbox = " << Dbl(getBBox(parts[i].rings).right - getBBox(parts[i].rings).left)
+                        << " x " << Dbl(getBBox(parts[i].rings).top - getBBox(parts[i].rings).bottom) << " mm\n";
+                std::cerr << "  area = " << parts[i].area << "\n";
             }
         }
         auto placed = greedy(parts, cli.W, cli.H, cli.rot);

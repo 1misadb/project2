@@ -4,7 +4,7 @@
 //   • 36 ориентаций (0…350° шаг 10°)
 //   • NFP через Clipper2::MinkowskiSum (clipper.minkowski.h)
 //   • Greedy corner‑search, размещение в отверстия
-//   • CLI:  nest -s 3000x1500 -r 10 *.dxf -o layout.csv
+//   • CLI:  nest -s 2000x2000 -r 10 *.dxf -o layout.csv
 //   • Header‑only зависимость: Clipper2 (https://github.com/AngusJohnson/Clipper2)
 // --------------------------------------------------------------------
 //  Build (g++ / MSVC):
@@ -208,6 +208,12 @@ static bool eqPt(const Point64& a, const Point64& b)
     return (dx * dx + dy * dy) <= tol_mm() * tol_mm();
 }
 
+// Check if a path is closed without modifying it 
+static bool isClosed(const Path64& path) 
+{ 
+    return path.size() > 1 && eqPt(path.front(), path.back()); 
+}
+
 // Euclidean distance between two points
 inline int64_t distance(const Point64& a, const Point64& b)
 {
@@ -390,7 +396,9 @@ static bool parseSpline(DXFReader& rd, Path64& out, int segNo)
         // knots
         case 40: knotVec.push_back(std::stod(rd.value)); break;
         // flags etc
-        case 70: closed = (std::stoi(rd.value) & 0x08); break;
+        // DXF SPLINE flag bit 0 == 1 --> closed spline
+        // earlier code erroneously checked bit 3 (planar)
+        case 70: closed = (std::stoi(rd.value) & 1); break;
         case 71: degree = std::stoi(rd.value); break;
         default: break;
         }
@@ -410,17 +418,22 @@ static bool parseSpline(DXFReader& rd, Path64& out, int segNo)
         out.insert(out.end(), poly.begin(), poly.end());
     }
     std::cerr << "ctrlPts.size()=" << ctrlPts.size() << ", knotVec.size()=" << knotVec.size() << ", degree=" << degree << '\n';
+    std::cerr << "SPLINE closed flag=" << closed << "   isClosed(path)=" << isClosed(out) << '\n';
     // --- Замыкание ---
     if (!out.empty()) {
         if (closed) {
             int64_t dist = distance(out.front(), out.back());
-            if (dist <= tol_mm() && out.front() != out.back()) {
+            if (dist > tol_mm()) {
+                std::cerr << "[FORCE] spline " << segNo
+                        << " forcibly closed, big gap=" << Dbl(dist) << " mm\n";
+                out.push_back(out.front());
+            } else if (dist <= tol_mm() && out.front() != out.back()) {
                 out.push_back(out.front());
                 std::cerr << "[AutoClose] spline " << segNo
-                          << " closed (distance=" << Dbl(dist) << " mm)\n";
+                        << " closed (distance=" << Dbl(dist) << " mm)\n";
             } else if (dist > tol_mm()) {
                 std::cerr << "[Warn] spline " << segNo
-                          << " not closed, gap=" << Dbl(dist) << " mm\n";
+                        << " not closed, gap=" << Dbl(dist) << " mm\n";
             }
         }
     }

@@ -10,7 +10,8 @@
 //  Build (g++ / MSVC):
 //      g++ -std=c++17 -O3 nesting_clip2.cpp -I./Clipper3/CPP/Clipper2Lib/include -o nest
 // --------------------------------------------------------------------
-
+// для нестинга полная для раскладки через питон парсер полная схема лежит в редми используюет джейсон пакет предпологает что координаты будут лежать в массиве 
+// в виде poliny так как перебирать багованые координаты через C++ это дело не состоятельное и лучшен использовать готовую провереную итоговую питон библиотеку  
 #include <iostream>
 #include <fstream>
 #include <vector>
@@ -29,6 +30,7 @@
 
 #include "clipper3/clipper.h"
 #include "clipper3/clipper.minkowski.h"
+#include <json.hpp>
 double gUnit = 1.0;
 using namespace Clipper2Lib;
 
@@ -147,7 +149,7 @@ static bool overlap(const Paths64&a,const Paths64&b){
 }
 
 // ───────── DXF mini loader ─────────
-struct RawPart{ Paths64 rings; double area=0; int id=0; };
+struct RawPart{ Paths64 rings; double area=0; int id=0; Paths64 holes; };
 
 // New raw entity representation from DXF
 struct RawEntity{
@@ -697,6 +699,63 @@ static std::vector<RawPart> entitiesToParts(const std::vector<RawEntity>& ents)
     return parts;
 }
 
+// ---------------------------------------------------------------
+// Load parts from JSON file produced by extract_polylines.py
+static std::vector<RawPart> loadPartsFromJson(const std::string& filename)
+{
+    std::ifstream fin(filename);
+    if(!fin)
+        throw std::runtime_error("open "+filename);
+
+    nlohmann::json j;
+    fin >> j;
+    if(!j.is_array())
+        throw std::runtime_error("invalid JSON format in "+filename);
+
+    RawPart part; // Теперь только один Part
+    bool first = true;
+    for(const auto& path : j)
+    {
+        if(!path.is_array())
+            continue;
+
+        Path64 ring;
+        for(const auto& pt : path)
+        {
+            if(pt.size() < 2) continue;
+            double x = pt[0].get<double>();
+            double y = pt[1].get<double>();
+            ring.emplace_back(I64mm(x), I64mm(y));
+        }
+
+        if(ring.size() < 2) continue;
+
+        // нормализация в (0,0) - по желанию
+        Rect64 bb = getBBox(ring);
+        int64_t dx = -bb.left, dy = -bb.bottom;
+        if(dx || dy)
+            for(auto& p : ring){ p.x += dx; p.y += dy; }
+
+        if(ring.front() != ring.back())
+            ring.push_back(ring.front());
+
+        if (first) {
+            part.rings.push_back(ring); // внешний контур
+            first = false;
+        } else {
+            part.holes.push_back(ring); // дырки
+        }
+    }
+    // Площадь только внешнего контура
+    double area_mm2 = part.rings.empty() ? 0 : std::abs(Area(part.rings[0])) / (SCALE * SCALE);
+    part.area = area_mm2;
+    part.id = 0;
+    std::vector<RawPart> parts;
+    if (!part.rings.empty())
+        parts.push_back(std::move(part));
+    return parts;
+}
+
 
 
 // ───────── orientations ─────────
@@ -755,10 +814,10 @@ static std::vector<Place> greedy(const std::vector<RawPart>&parts,double W,doubl
     auto mm2i = [](double mm){ return static_cast<int64_t>(std::llround(mm * SCALE)); };
     sheet.clear();
     sheet.clear();
-    sheet.emplace_back(0LL,            0LL);
-    sheet.emplace_back(mm2i(W),        0LL);
-    sheet.emplace_back(mm2i(W),        mm2i(H));
-    sheet.emplace_back(0LL,            mm2i(H));
+    sheet.emplace_back(int64_t(0),        int64_t(0));
+    sheet.emplace_back(mm2i(W),          int64_t(0));
+    sheet.emplace_back(mm2i(W),          mm2i(H));
+    sheet.emplace_back(int64_t(0),        mm2i(H));
     std::vector<Paths64> placed; std::vector<Place> out;
     for(size_t i=0;i<ord.size();++i){ bool ok=false; Place best{};
         for(auto &op:orient[i]){
@@ -847,9 +906,14 @@ void ExportToDXF(const std::string& filename, const std::vector<RawPart>& parts)
     f << "0\nSECTION\n2\nENTITIES\n";
 
     for (const auto& part : parts) {
-        for (const auto& ring : part.rings) {  // экспорт всех колец каждой детали
+        for (const auto& ring : part.rings) {  
             f << PolylineToDXF(ring);
         }
+        for (auto hole : part.holes) {
+            if (Area(hole) > 0)
+                std::reverse(hole.begin(), hole.end());
+            f << PolylineToDXF(hole);
+        }   
     }
 
     f << "0\nENDSEC\n0\nEOF\n";
@@ -881,6 +945,11 @@ void ExportPlacedToDXF(const std::string& filename,
         for (const auto& ring : part.rings) {
             f << PlacedPolylineToDXF(ring, pl.x, pl.y, pl.ang);
         }
+        for (auto hole : part.holes) {
+            if (Area(hole) > 0)
+                std::reverse(hole.begin(), hole.end());
+            f << PlacedPolylineToDXF(hole, pl.x, pl.y, pl.ang);
+        }
     }
     f << "0\nENDSEC\n0\nEOF\n";
 }
@@ -888,17 +957,9 @@ void ExportPlacedToDXF(const std::string& filename,
 int main(int argc, char* argv[]) {
     try {
         auto cli = parse(argc, argv);
-        int ucode      = detectDxfUnits(cli.files.front());
-        std::cerr << "INSUNITS detected: " << ucode << "  gUnit=" << gUnit << std::endl;
-        gUnit          = getDxfUnitFactor(ucode);
-        std::cerr << "[DXF] INSUNITS=" << ucode
-                  << "  (scale=" << gUnit << " mm per DXF unit)\n";
         std::vector<RawPart> parts;
         for(size_t idx=0; idx<cli.files.size(); ++idx){
-            std::ifstream fin(cli.files[idx]);
-            if(!fin) throw std::runtime_error("open "+cli.files[idx]);
-            auto ents  = parseEntities(fin);
-            auto pvec  = entitiesToParts(ents);
+            auto pvec  = loadPartsFromJson(cli.files[idx]);
             int cnt = (idx < cli.nums.size()? cli.nums[idx] : 1);
             for(int r=0; r<cnt; ++r)
                 for(const auto& base : pvec){

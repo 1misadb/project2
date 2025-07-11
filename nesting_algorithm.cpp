@@ -25,6 +25,8 @@
 #include <stdexcept>
 #include <cstdint>
 #include <array>
+#include <random>
+#include <chrono>
 #define _USE_MATH_DEFINES
 #include <math.h>
 
@@ -146,6 +148,17 @@ static Paths64 unionAll(const Paths64& in){
 
 static bool overlap(const Paths64&a,const Paths64&b){
     return !Intersect(a,b,FillRule::NonZero).empty();
+}
+
+// Translate polygon set by (dx,dy)
+static Paths64 movePaths(const Paths64& src, int64_t dx, int64_t dy){
+    Paths64 out; out.reserve(src.size());
+    for(const auto& path: src){
+        Path64 p; p.reserve(path.size());
+        for(auto pt: path) p.push_back({pt.x + dx, pt.y + dy});
+        out.push_back(std::move(p));
+    }
+    return out;
 }
 
 // ───────── DXF mini loader ─────────
@@ -842,32 +855,80 @@ static const Paths64& nfp(const Orient& A, const Orient& B){
 // Place a set of parts onto the sheet using a simple greedy algorithm
 struct Place{int id; double x,y; int ang;};
 
-static std::vector<Place> greedy(const std::vector<RawPart>&parts,double W,double H,int step){
-    auto ord=parts; std::sort(ord.begin(),ord.end(),[](auto&a,auto&b){return a.area>b.area;});
-    auto orient=makeOrient(ord,step);
-    Path64 sheet;
-    sheet.reserve(4);
+// Greedy placer using NFP and optional random iterations
+static std::vector<Place> greedy(const std::vector<RawPart>&parts,
+                                 double W,double H,int step,int iterations=1){
     auto mm2i = [](double mm){ return static_cast<int64_t>(std::llround(mm * SCALE)); };
-    sheet.clear();
-    sheet.clear();
-    sheet.emplace_back(int64_t(0),        int64_t(0));
-    sheet.emplace_back(mm2i(W),          int64_t(0));
-    sheet.emplace_back(mm2i(W),          mm2i(H));
-    sheet.emplace_back(int64_t(0),        mm2i(H));
-    std::vector<Paths64> placed; std::vector<Place> out;
-    for(size_t i=0;i<ord.size();++i){ bool ok=false; Place best{};
-        for(auto &op:orient[i]){
-            std::vector<Point64> cand = { Point64{ 0LL, 0LL } };
-            for(auto&pp:placed) for(auto&pt:pp[0]) cand.push_back(pt);
-            for(auto c:cand){ Rect64 bb=op.bb; bb.left+=c.x; bb.right+=c.x; bb.bottom+=c.y; bb.top+=c.y;
-                if(bb.right>sheet[2].x||bb.top>sheet[2].y||bb.left<0||bb.bottom<0) continue;
-                Paths64 sh; sh.reserve(op.poly.size()); for(auto&ring:op.poly){ Path64 r; r.reserve(ring.size()); for(auto pt:ring) r.push_back({pt.x+c.x, pt.y+c.y}); sh.push_back(std::move(r)); }
-                bool clash=false; for(auto&pl:placed){ if(overlap(pl,sh)){ clash=true; break; }} if(clash) continue;
-                best={op.id,Dbl(c.x),Dbl(c.y),op.ang}; placed.push_back(std::move(sh)); ok=true; break; }
-            if(ok) break; }
-        if(ok) out.push_back(best); else std::cerr<<"skip "<<ord[i].id<<"\n";
+    Point64 sheetBR{ mm2i(W), mm2i(H) };
+
+    std::mt19937 rng((uint32_t)std::chrono::steady_clock::now().time_since_epoch().count());
+    std::vector<Place> bestLayout; double bestArea = std::numeric_limits<double>::max();
+
+    for(int it=0; it<iterations; ++it){
+        auto ord = parts;
+        std::sort(ord.begin(), ord.end(), [](auto&a,auto&b){ return a.area>b.area; });
+        if(it>0) std::shuffle(ord.begin(), ord.end(), rng);
+
+        auto orient = makeOrient(ord, step);
+        std::vector<Paths64> placedShapes;        // polygons at actual position
+        std::vector<Orient> placedOrient;         // orientations without shift
+        std::vector<Place> layout;
+
+        for(size_t i=0;i<ord.size();++i){
+            bool ok=false; Place best{}; Orient bestO{};
+            for(const auto& op : orient[i]){
+                if(op.bb.right > sheetBR.x || op.bb.top > sheetBR.y)
+                    continue; // doesn't fit sheet at all
+
+                std::vector<Point64> cand;
+                if(placedShapes.empty())
+                    cand.push_back({0,0});
+                else
+                    for(const auto& po : placedOrient){
+                        const Paths64& nfpp = nfp(po, op);
+                        for(const auto& pth : nfpp)
+                            for(const auto& pt : pth)
+                                cand.push_back(pt);
+                    }
+
+                if(cand.empty()) cand.push_back({0,0});
+
+                std::sort(cand.begin(), cand.end(),[](const Point64&a,const Point64&b){
+                    return a.y==b.y ? a.x<b.x : a.y<b.y;});
+
+                for(const auto& c : cand){
+                    Rect64 bb=op.bb; bb.left+=c.x; bb.right+=c.x; bb.bottom+=c.y; bb.top+=c.y;
+                    if(bb.left<0||bb.bottom<0||bb.right>sheetBR.x||bb.top>sheetBR.y)
+                        continue;
+                    Paths64 moved = movePaths(op.poly, c.x, c.y);
+                    bool clash=false;
+                    for(const auto& pl: placedShapes){ if(overlap(pl,moved)){ clash=true; break; }}
+                    if(clash) continue;
+                    best = {op.id, Dbl(c.x), Dbl(c.y), op.ang};
+                    bestO = op;
+                    placedShapes.push_back(std::move(moved));
+                    placedOrient.push_back(op);
+                    ok=true;
+                    break;
+                }
+                if(ok) break;
+            }
+            if(ok) layout.push_back(best); else std::cerr<<"skip "<<ord[i].id<<"\n";
+        }
+
+        int64_t maxX=0,maxY=0;
+        for(const auto& pl: placedShapes){
+            Rect64 bb = getBBox(pl);
+            maxX = std::max(maxX, bb.right);
+            maxY = std::max(maxY, bb.top);
+        }
+        double area = Dbl(maxX) * Dbl(maxY);
+        if(layout.size()>bestLayout.size() || area < bestArea){
+            bestLayout = layout;
+            bestArea = area;
+        }
     }
-    return out;
+    return bestLayout;
 }
 
 // ───────── CLI ─────────
@@ -879,6 +940,7 @@ struct CLI{
     std::vector<int> nums;
     int num = 1;
     bool joinSegments = false;
+    int iter = 1; // number of random iterations
 };
 
 // Display usage information
@@ -889,6 +951,7 @@ static void printHelp(const char* exe){
               << "  -r, --rot N       Rotation step in degrees (default 10)\n"
              << "  -o, --out FILE    Output CSV file (default layout.csv)\n"
              << "  -j, --join-segments  Join broken segments into loops\n"
+             << "  -i, --iter N      Number of random iterations (default 1)\n"
              << "  -h, --help        Show this help message\n";
 }
 
@@ -912,6 +975,9 @@ static CLI parse(int ac, char** av){
             c.out = av[++i];
         }else if(a=="-j"||a=="--join-segments"){
             c.joinSegments = true;
+        }else if(a=="-i"||a=="--iter"){
+            if(i+1>=ac) throw std::runtime_error("missing value for --iter");
+            c.iter = std::stoi(av[++i]);
         }else if(a=="-n"||a=="--num"){
             while (i+1<ac && std::isdigit(av[i+1][0]))
             {
@@ -1010,7 +1076,7 @@ int main(int argc, char* argv[]) {
                 std::cerr << "  area = " << parts[i].area << "\n";
             }
         }
-        auto placed = greedy(parts, cli.W, cli.H, cli.rot);
+        auto placed = greedy(parts, cli.W, cli.H, cli.rot, cli.iter);
 
         // Экспорт CSV
         std::ofstream f(cli.out);

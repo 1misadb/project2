@@ -727,57 +727,68 @@ static std::vector<RawPart> loadPartsFromJson(const std::string& filename)
     if(!j.is_array())
         throw std::runtime_error("invalid JSON format in "+filename);
 
-    RawPart part; // один Part с внешним контуром и дырками
-    bool first = true;
-    for(const auto& path : j)
-    {
-        if(!path.is_array())
-            continue;
+    auto parse_one = [](const nlohmann::json& arr)->RawPart {
+        RawPart p;
+        bool first = true;
+        for(const auto& path : arr){
+            if(!path.is_array())
+                continue;
+            Path64 ring;
+            for(const auto& pt : path){
+                if(pt.size() < 2) continue;
+                double x = pt[0].get<double>();
+                double y = pt[1].get<double>();
+                ring.emplace_back(I64mm(x), I64mm(y));
+            }
+            if(ring.size() < 2) continue;
+            if(ring.front() != ring.back())
+                ring.push_back(ring.front());
+            if(first){
+                p.rings.push_back(ring);
+                first = false;
+            }else{
+                p.holes.push_back(ring);
+            }
+        }
+        if(p.rings.empty())
+            return p;
 
-        Path64 ring;
-        for(const auto& pt : path)
-        {
-            if(pt.size() < 2) continue;
-            double x = pt[0].get<double>();
-            double y = pt[1].get<double>();
-            ring.emplace_back(I64mm(x), I64mm(y));
+        Rect64 bb = getBBox(p.rings[0]);
+        int64_t dx = -bb.left, dy = -bb.bottom;
+        if(dx || dy){
+            for(auto& pt : p.rings[0]){ pt.x += dx; pt.y += dy; }
+            for(auto& hole : p.holes)
+                for(auto& pt : hole){ pt.x += dx; pt.y += dy; }
         }
 
-        if(ring.size() < 2) continue;
+        p.area = std::abs(Area(p.rings[0])) / (SCALE * SCALE);
+        return p;
+    };
 
-        if(ring.front() != ring.back())
-            ring.push_back(ring.front());
-
-        if (first) {
-            part.rings.push_back(ring); // внешний контур
-            first = false;
-        } else {
-            part.holes.push_back(ring); // дырки
+    bool multi = false;
+    if(j.size() > 0 && j[0].is_array()){
+        if(j[0].size() > 0 && j[0][0].is_array()){
+            if(j[0][0].size() > 0 && j[0][0][0].is_array())
+                multi = true;
         }
-    }
-
-    if (part.rings.empty())
-        return {};
-
-    // глобальный сдвиг по bbox внешнего контура
-    Rect64 bb = getBBox(part.rings[0]);
-    int64_t dx = -bb.left, dy = -bb.bottom;
-    if(dx || dy){
-        for(auto& pt : part.rings[0]){ pt.x += dx; pt.y += dy; }
-        for(auto& hole : part.holes)
-            for(auto& pt : hole){ pt.x += dx; pt.y += dy; }
-    }
-
-    part.area = std::abs(Area(part.rings[0])) / (SCALE * SCALE);
-    part.id = 0;
-
-    if(!part.holes.empty() && part.holes[0].size() > 1){
-        std::cerr << "[TEST] hole0 p0=" << Dbl(part.holes[0][0].x) << "," << Dbl(part.holes[0][0].y)
-                  << " p1=" << Dbl(part.holes[0][1].x) << "," << Dbl(part.holes[0][1].y) << "\n";
     }
 
     std::vector<RawPart> parts;
-    parts.push_back(std::move(part));
+    if(multi){
+        for(const auto& detail : j){
+            RawPart part = parse_one(detail);
+            if(!part.rings.empty()){ 
+                part.id = static_cast<int>(parts.size());
+                parts.push_back(std::move(part));
+            }
+        }
+    }else{
+        RawPart part = parse_one(j);
+        if(!part.rings.empty()){
+            part.id = 0;
+            parts.push_back(std::move(part));
+        }
+    }
     return parts;
 }
 

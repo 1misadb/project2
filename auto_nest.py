@@ -23,8 +23,12 @@ if __name__ == "__main__":
     for dxf in dxf_files:
         json_out = os.path.splitext(dxf)[0] + ".json"
         print(f"[PY] DXF → JSON: {dxf} -> {json_out}")
+
+        # ✅ Путь к твоему Python39
         python39_path = r"C:\Users\User\AppData\Local\Programs\Python\Python39\python.exe"
-        subprocess.check_call([python39_path, "extract_polylines.py", dxf, "-o", json_out])
+
+        # ✅ Вызов нового конвертера
+        subprocess.check_call([python39_path, "extract_all_shapes.py", dxf, json_out])
 
         json_files.append(json_out)
     

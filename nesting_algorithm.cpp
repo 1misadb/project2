@@ -667,25 +667,40 @@ static inline std::int64_t I64mm(double mm)
 // ───────── RawEntity → RawPart ──────────────────────────────────────
 static RawPart entityToPart(const RawEntity& e)
 {
-    Path64 ring; ring.reserve(e.pts.size());
-    for (auto [x,y] : e.pts)                    // mm → int64 (без gUnit!)
-        ring.push_back({ llround(x * SCALE), llround(y * SCALE) });
+    RawPart part;
 
-    // ─── поднимаем в (0,0) ───────────────────────────
-    Rect64 bb = getBBox(ring);
-    std::cerr << "BBox BEFORE shift: "
-          << Dbl(bb.left) << "," << Dbl(bb.bottom)
-          << " to " << Dbl(bb.right) << "," << Dbl(bb.top) << "\n";
+    Path64 outer; outer.reserve(e.pts.size());
+    for (auto [x,y] : e.pts)             // mm → int64 (без gUnit!)
+        outer.push_back({ llround(x * SCALE), llround(y * SCALE) });
+
+    // bbox only for outer ring
+    Rect64 bb = getBBox(outer);
     const int64_t dx = -bb.left, dy = -bb.bottom;
-    if (dx || dy)
-        for (auto &pt : ring) { pt.x += dx; pt.y += dy; }
 
-    if (ring.size() > 1 && ring.front() != ring.back())
-        ring.push_back(ring.front());
+    auto apply_shift = [&](Path64& p){
+        if (dx || dy)
+            for (auto& pt : p){ pt.x += dx; pt.y += dy; }
+    };
 
-    Paths64 rings{ ring };
-    double area_mm2 = std::abs(Area(rings[0])) / (SCALE * SCALE);
-    return { rings, area_mm2, 0 };
+    apply_shift(outer);
+    if (outer.size() > 1 && outer.front() != outer.back())
+        outer.push_back(outer.front());
+    part.rings.push_back(std::move(outer));
+
+    // convert holes if any (not shifted individually)
+    for (const auto& h : e.extra){
+        Path64 hole; hole.reserve(h.size());
+        for (auto [x,y] : h)
+            hole.push_back({ llround(x * SCALE), llround(y * SCALE) });
+        apply_shift(hole);
+        if (hole.size() > 1 && hole.front() != hole.back())
+            hole.push_back(hole.front());
+        part.holes.push_back(std::move(hole));
+    }
+
+    part.area = std::abs(Area(part.rings[0])) / (SCALE * SCALE);
+    part.id = 0;
+    return part;
 }
 
 static std::vector<RawPart> entitiesToParts(const std::vector<RawEntity>& ents)
@@ -712,7 +727,7 @@ static std::vector<RawPart> loadPartsFromJson(const std::string& filename)
     if(!j.is_array())
         throw std::runtime_error("invalid JSON format in "+filename);
 
-    RawPart part; // Теперь только один Part
+    RawPart part; // один Part с внешним контуром и дырками
     bool first = true;
     for(const auto& path : j)
     {
@@ -730,12 +745,6 @@ static std::vector<RawPart> loadPartsFromJson(const std::string& filename)
 
         if(ring.size() < 2) continue;
 
-        // нормализация в (0,0) - по желанию
-        Rect64 bb = getBBox(ring);
-        int64_t dx = -bb.left, dy = -bb.bottom;
-        if(dx || dy)
-            for(auto& p : ring){ p.x += dx; p.y += dy; }
-
         if(ring.front() != ring.back())
             ring.push_back(ring.front());
 
@@ -746,13 +755,29 @@ static std::vector<RawPart> loadPartsFromJson(const std::string& filename)
             part.holes.push_back(ring); // дырки
         }
     }
-    // Площадь только внешнего контура
-    double area_mm2 = part.rings.empty() ? 0 : std::abs(Area(part.rings[0])) / (SCALE * SCALE);
-    part.area = area_mm2;
+
+    if (part.rings.empty())
+        return {};
+
+    // глобальный сдвиг по bbox внешнего контура
+    Rect64 bb = getBBox(part.rings[0]);
+    int64_t dx = -bb.left, dy = -bb.bottom;
+    if(dx || dy){
+        for(auto& pt : part.rings[0]){ pt.x += dx; pt.y += dy; }
+        for(auto& hole : part.holes)
+            for(auto& pt : hole){ pt.x += dx; pt.y += dy; }
+    }
+
+    part.area = std::abs(Area(part.rings[0])) / (SCALE * SCALE);
     part.id = 0;
+
+    if(!part.holes.empty() && part.holes[0].size() > 1){
+        std::cerr << "[TEST] hole0 p0=" << Dbl(part.holes[0][0].x) << "," << Dbl(part.holes[0][0].y)
+                  << " p1=" << Dbl(part.holes[0][1].x) << "," << Dbl(part.holes[0][1].y) << "\n";
+    }
+
     std::vector<RawPart> parts;
-    if (!part.rings.empty())
-        parts.push_back(std::move(part));
+    parts.push_back(std::move(part));
     return parts;
 }
 
@@ -909,11 +934,9 @@ void ExportToDXF(const std::string& filename, const std::vector<RawPart>& parts)
         for (const auto& ring : part.rings) {  
             f << PolylineToDXF(ring);
         }
-        for (auto hole : part.holes) {
-            if (Area(hole) > 0)
-                std::reverse(hole.begin(), hole.end());
+        for (const auto& hole : part.holes) {
             f << PolylineToDXF(hole);
-        }   
+        }
     }
 
     f << "0\nENDSEC\n0\nEOF\n";
@@ -945,9 +968,7 @@ void ExportPlacedToDXF(const std::string& filename,
         for (const auto& ring : part.rings) {
             f << PlacedPolylineToDXF(ring, pl.x, pl.y, pl.ang);
         }
-        for (auto hole : part.holes) {
-            if (Area(hole) > 0)
-                std::reverse(hole.begin(), hole.end());
+        for (const auto& hole : part.holes) {
             f << PlacedPolylineToDXF(hole, pl.x, pl.y, pl.ang);
         }
     }

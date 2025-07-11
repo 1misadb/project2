@@ -8,7 +8,7 @@
 //   • Header‑only зависимость: Clipper2 (https://github.com/AngusJohnson/Clipper2)
 // --------------------------------------------------------------------
 //  Build (g++ / MSVC):
-//      g++ -std=c++17 -O3 nesting_clip2.cpp -I./Clipper3/CPP/Clipper2Lib/include -o nest
+//      /EHsc /std:c++17 /O2 clipper3\src\clipper.engine.cpp clipper3\src\clipper.offset.cpp clipper3\src\clipper.rectclip.cpp nesting_algorithm.cpp /Iclipper3\include /I. /Fenest.exe
 // --------------------------------------------------------------------
 // для нестинга полная для раскладки через питон парсер полная схема лежит в редми используюет джейсон пакет предпологает что координаты будут лежать в массиве 
 // в виде poliny так как перебирать багованые координаты через C++ это дело не состоятельное и лучшен использовать готовую провереную итоговую питон библиотеку  

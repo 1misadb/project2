@@ -41,6 +41,16 @@ def entity_to_polyline(entity, spline_tol=0.5):
         return arc_to_polyline(dummy)
     return None
 
+def autoclose_path(path, tol=0.2):
+    """Если концы близко — замыкаем путь"""
+    if len(path) > 2:
+        x0, y0 = path[0]
+        x1, y1 = path[-1]
+        dist = ((x0 - x1)**2 + (y0 - y1)**2) ** 0.5
+        if dist < tol:
+            path[-1] = [x0, y0]
+    return path
+
 def merge_paths_into_shapes(all_paths):
     # Переводим пути в shapely-полигоны (игнорируем короткие)
     polys = []
@@ -86,22 +96,21 @@ def extract_all_shapes(dxf_path, out_json="parts.json", spline_tol=0.5):
         poly = entity_to_polyline(entity, spline_tol=spline_tol)
         if poly and len(poly) > 1:
             scaled = [[x * SCALE, y * SCALE] for x, y in poly]
-            all_paths.append(scaled)
+            closed = autoclose_path(scaled, tol=0.2)
+            all_paths.append(closed)
     if not all_paths:
         print("No paths found!")
         return
-    # Сдвигаем всё в (0,0)
     min_x = min(pt[0] for path in all_paths for pt in path)
     min_y = min(pt[1] for path in all_paths for pt in path)
     shifted_paths = []
     for path in all_paths:
         shifted = [[x - min_x, y - min_y] for x, y in path]
         shifted_paths.append(shifted)
-    # Авто-группировка деталей и дырок
-    grouped = merge_paths_into_shapes(shifted_paths)
+    # Просто сохраняй каждый контур как отдельную деталь
     with open(out_json, "w") as f:
-        json.dump(grouped, f)
-    print(f"Extracted {len(grouped)} shapes (details) from {dxf_path} → {out_json}")
+        json.dump([ [path] for path in shifted_paths ], f)
+    print(f"Extracted {len(shifted_paths)} polylines as shapes from {dxf_path} → {out_json}")
 
 if __name__ == "__main__":
     import argparse

@@ -18,6 +18,7 @@
 #include <string>
 #include <unordered_map>
 #include <algorithm>
+#include <numeric>
 #include <cmath>
 #include <map>
 #include <sstream>
@@ -27,7 +28,8 @@
 #include <array>
 #include <random>
 #include <chrono>
-#include <omp.h> 
+#include <thread>
+#include <omp.h>
 #define _USE_MATH_DEFINES
 #include <math.h>
 
@@ -81,7 +83,7 @@ int detectDxfUnits(const std::string& dxf_file) {
 }
 
 constexpr double SCALE = 1e4;
-constexpr int DEFAULT_ROT_STEP = 10;
+constexpr int DEFAULT_ROT_STEP = 45;
 constexpr double TOL_MM = 1.0;                 // base tolerance in mm
 inline int64_t tol_mm() { return llround(TOL_MM * SCALE); }
 // Преобразование double → int64 с учетом SCALE
@@ -831,7 +833,7 @@ static Paths64 rot(const Paths64& src, double s, double c) {
 static std::vector<std::vector<Orient>> makeOrient(const std::vector<RawPart>& parts, int step){
     std::vector<std::vector<Orient>> all(parts.size());
 
-    #pragma omp parallel for
+    #pragma omp parallel for schedule(static)
     for (int i = 0; i < parts.size(); ++i) {
         const auto& p = parts[i];
         std::vector<Orient> ovec;
@@ -846,21 +848,41 @@ static std::vector<std::vector<Orient>> makeOrient(const std::vector<RawPart>& p
 }
 
 // ───────── NFP cache ─────────
-using Key=uint64_t; static std::unordered_map<Key,Paths64> NFP;
+using Key = uint64_t;
+static std::unordered_map<Key, Paths64> gNfpCache;
+
 static Key kfn(int a, int ra, int b, int rb){
-    return ((uint64_t)a<<48)^((uint64_t)ra<<32)^((uint64_t)b<<16)^rb;
+    return ((uint64_t)a<<48) ^ ((uint64_t)ra<<32) ^ ((uint64_t)b<<16) ^ (uint64_t)rb;
 }
-using Key=uint64_t;
+
 // Calculate and cache no-fit polygon (NFP) for oriented parts
-static Paths64 nfp(const Orient& A, const Orient& B, std::unordered_map<Key,Paths64>& localNFP){
+static const Paths64& nfp(const Orient& A, const Orient& B, std::unordered_map<Key,Paths64>& localNFP){
     Key k = kfn(A.id, A.ang, B.id, B.ang);
     auto it = localNFP.find(k);
-    if (it != localNFP.end())
-        return it->second;
+    if(it != localNFP.end()) return it->second;
 
-    Paths64 result = MinkowskiSum(A.poly[0], B.poly[0], true);
-    localNFP[k] = result;
-    return result;
+    #pragma omp critical
+    {
+        auto git = gNfpCache.find(k);
+        if(git != gNfpCache.end())
+            localNFP[k] = git->second;
+        else {
+            Path64 a = SimplifyPath(A.poly[0], 0.05 * SCALE);
+            Path64 b = SimplifyPath(B.poly[0], 0.05 * SCALE);
+            if(std::abs(Area(a)) / (SCALE*SCALE) < 1.0) {
+                Rect64 bb = getBBox(a);
+                a = { {bb.left,bb.bottom}, {bb.right,bb.bottom}, {bb.right,bb.top}, {bb.left,bb.top}, {bb.left,bb.bottom} };
+            }
+            if(std::abs(Area(b)) / (SCALE*SCALE) < 1.0) {
+                Rect64 bb = getBBox(b);
+                b = { {bb.left,bb.bottom}, {bb.right,bb.bottom}, {bb.right,bb.top}, {bb.left,bb.top}, {bb.left,bb.bottom} };
+            }
+            Paths64 res = MinkowskiSum(a, b, true);
+            gNfpCache[k] = res;
+            localNFP[k] = res;
+        }
+    }
+    return localNFP[k];
 }
 
 
@@ -870,9 +892,23 @@ static Paths64 nfp(const Orient& A, const Orient& B, std::unordered_map<Key,Path
 // Place a set of parts onto the sheet using a simple greedy algorithm
 struct Place{int id; double x,y; int ang;};
 
+static double computeArea(const std::vector<Place>& layout, const std::vector<RawPart>& parts){
+    if(layout.empty()) return 0.0;
+    Paths64 all;
+    for(const auto& pl : layout){
+        double rad = pl.ang * M_PI / 180.0;
+        auto r = rot(parts[pl.id].rings, sin(rad), cos(rad));
+        Paths64 moved = movePaths(r, I64mm(pl.x), I64mm(pl.y));
+        all.insert(all.end(), moved.begin(), moved.end());
+    }
+    Rect64 bb = getBBox(all);
+    return Dbl(bb.right - bb.left) * Dbl(bb.top - bb.bottom);
+}
+
 // Greedy placer using NFP and optional random iterations
 static std::vector<Place> greedy(const std::vector<RawPart>& parts,
-                                 double W, double H, int step, int iterations,
+                                 double W, double H, int step, int grid,
+                                 int iterations,
                                  std::unordered_map<Key,Paths64>& localNFP) {
     using namespace std::chrono;
     auto start_all = steady_clock::now();
@@ -903,21 +939,29 @@ static std::vector<Place> greedy(const std::vector<RawPart>& parts,
                     continue;
 
                 std::vector<Point64> cand;
-                if (placedShapes.empty())
-                    cand.push_back({ 0,0 });
-                else
-                    for (const auto& po : placedOrient) {
-                        const Paths64& nfpp = nfp(po, op, localNFP);
-                        for (const auto& pth : nfpp)
-                            for (const auto& pt : pth)
-                                cand.push_back(pt);
-                    }
+                for(const auto& po : placedOrient) {
+                    const Paths64& nfpp = nfp(po, op, localNFP);
+                    for(const auto& pth : nfpp)
+                        for(const auto& pt : pth)
+                            cand.push_back(pt);
+                }
+                cand.push_back({0,0});
+                for(const auto& ps : placedShapes){
+                    Rect64 bb = getBBox(ps);
+                    cand.push_back({bb.left, bb.bottom});
+                    cand.push_back({bb.right, bb.bottom});
+                    cand.push_back({bb.left, bb.top});
+                    cand.push_back({bb.right, bb.top});
+                }
+                int64_t step_i = mm2i(grid);
+                for(int64_t y=0; y<=sheetBR.y; y+=step_i)
+                    for(int64_t x=0; x<=sheetBR.x; x+=step_i)
+                        cand.push_back({x,y});
 
-                if (cand.empty()) cand.push_back({ 0,0 });
-
-                std::sort(cand.begin(), cand.end(), [](const Point64& a, const Point64& b) {
+                std::sort(cand.begin(), cand.end(), [](const Point64& a, const Point64& b){
                     return a.y == b.y ? a.x < b.x : a.y < b.y;
                 });
+                if(cand.size() > 512) cand.resize(512);
 
                 for (const auto& c : cand) {
                     Rect64 bb = op.bb; bb.left += c.x; bb.right += c.x; bb.bottom += c.y; bb.top += c.y;
@@ -952,8 +996,7 @@ static std::vector<Place> greedy(const std::vector<RawPart>& parts,
             bestArea = area;
         }
 
-        std::cerr << "[Iter " << it + 1 << "/" << iterations
-                  << "] placed=" << layout.size() << " area=" << area << "\n";
+        // iteration log removed
     }
 
     auto end_all = steady_clock::now();
@@ -966,6 +1009,7 @@ static std::vector<Place> greedy(const std::vector<RawPart>& parts,
 struct CLI{
     double W = 0, H = 0;
     int rot = DEFAULT_ROT_STEP;
+    int grid = 10;
     std::string out = "layout.csv";
     std::vector<std::string> files;
     std::vector<int> nums;
@@ -979,10 +1023,11 @@ static void printHelp(const char* exe){
     std::cout << "Usage: " << exe << " -s WxH [options] files...\n"
               << "Options:\n"
               << "  -s, --sheet WxH    Sheet size in mm\n"
-              << "  -r, --rot N       Rotation step in degrees (default 10)\n"
+             << "  -r, --rot N       Rotation step in degrees (default 45)\n"
              << "  -o, --out FILE    Output CSV file (default layout.csv)\n"
              << "  -j, --join-segments  Join broken segments into loops\n"
              << "  -i, --iter N      Number of random iterations (default 1)\n"
+             << "  -g, --grid N      Grid step in mm (default 10)\n"
              << "  -h, --help        Show this help message\n";
 }
 
@@ -1009,6 +1054,9 @@ static CLI parse(int ac, char** av){
         }else if(a=="-i"||a=="--iter"){
             if(i+1>=ac) throw std::runtime_error("missing value for --iter");
             c.iter = std::stoi(av[++i]);
+        }else if(a=="-g"||a=="--grid"){
+            if(i+1>=ac) throw std::runtime_error("missing value for --grid");
+            c.grid = std::stoi(av[++i]);
         }else if(a=="-n"||a=="--num"){
             while (i+1<ac && std::isdigit(av[i+1][0]))
             {
@@ -1086,8 +1134,7 @@ void ExportPlacedToDXF(const std::string& filename,
 int main(int argc, char* argv[]) {
     try {
         auto cli = parse(argc, argv);
-        omp_set_num_threads(4); // ставь нужное количество ядер здесь
-        std::cerr << "[DEBUG] omp_get_max_threads() = " << omp_get_max_threads() << "\n";
+        omp_set_num_threads(std::thread::hardware_concurrency());
 
         std::vector<RawPart> parts;
         for(size_t idx=0; idx<cli.files.size(); ++idx){
@@ -1099,16 +1146,7 @@ int main(int argc, char* argv[]) {
                     p.id = int(parts.size());
                     parts.push_back(p);
                 }
-            for (size_t i = 0; i < parts.size(); ++i) {
-                std::cerr << "[PART #" << i << "] points: ";
-                for (auto& path : parts[i].rings)
-                    for (auto& p : path)
-                        std::cerr << "(" << Dbl(p.x) << "," << Dbl(p.y) << ") ";
-                std::cerr << "\n";
-                std::cerr << "  bbox = " << Dbl(getBBox(parts[i].rings).right - getBBox(parts[i].rings).left)
-                        << " x " << Dbl(getBBox(parts[i].rings).top - getBBox(parts[i].rings).bottom) << " mm\n";
-                std::cerr << "  area = " << parts[i].area << "\n";
-            }
+            // removed verbose part info
         }
 
         std::vector<Place> finalBest;
@@ -1117,17 +1155,9 @@ int main(int argc, char* argv[]) {
         #pragma omp parallel
         {
             std::unordered_map<Key, Paths64> localNFP;
-            auto layout = greedy(parts, cli.W, cli.H, cli.rot, cli.iter, localNFP);
+            auto layout = greedy(parts, cli.W, cli.H, cli.rot, cli.grid, cli.iter, localNFP);
 
-            // вычисляем занятую площадь
-            int64_t maxX = 0, maxY = 0;
-            for (const auto& pl : layout) {
-                // Здесь нужен getBBox для каждого placed элемента.
-                // Поскольку layout содержит Place, а не Path,
-                // ты можешь суммировать координаты или реализовать computeArea(layout)
-                // Если у тебя есть функция computeArea, замени на неё.
-            }
-            double area = layout.size(); // примерная метрика, замени на реальную площадь при необходимости
+            double area = computeArea(layout, parts);
 
             #pragma omp critical
             {

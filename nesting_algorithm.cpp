@@ -29,8 +29,8 @@
 #include <random>
 #include <mutex>
 #include <chrono>
+#include <atomic>
 #include <thread>
-#include <omp.h>
 #define _USE_MATH_DEFINES
 #include <math.h>
 
@@ -82,7 +82,16 @@ int detectDxfUnits(const std::string& dxf_file) {
     }
     return 0;
 }
-
+using Key = uint64_t;
+static Key kfn(int a, int ra, int b, int rb){
+    return ((uint64_t)a<<48) ^ ((uint64_t)ra<<32) ^ ((uint64_t)b<<16) ^ (uint64_t)rb;
+}
+static std::unordered_map<Key, Paths64> gNfpCache;
+static std::mutex gNfpMutex;
+std::mutex gNfpMutex;
+std::mutex result_mutex;
+std::mutex nfp_mutex;
+std::unordered_map<Key, Paths64> sharedNFP;
 constexpr double SCALE = 1e4;
 constexpr int DEFAULT_ROT_STEP = 45;
 constexpr double TOL_MM = 1.0;                 // base tolerance in mm
@@ -833,7 +842,6 @@ static Paths64 rot(const Paths64& src, double s, double c) {
 // Precompute rotated variants for each part
 static std::vector<std::vector<Orient>> makeOrient(const std::vector<RawPart>& parts, int step){
     std::vector<std::vector<Orient>> all(parts.size());
-    std::vector<std::vector<Orient>> out(parts.size());
     for (int i = 0; i < parts.size(); ++i) {
         const auto& p = parts[i];
         std::vector<Orient> ovec;
@@ -847,31 +855,29 @@ static std::vector<std::vector<Orient>> makeOrient(const std::vector<RawPart>& p
     return all;
 }
 
-// ───────── NFP cache ─────────
-using Key = uint64_t;
-static std::unordered_map<Key, Paths64> gNfpCache;
 
-static Key kfn(int a, int ra, int b, int rb){
-    return ((uint64_t)a<<48) ^ ((uint64_t)ra<<32) ^ ((uint64_t)b<<16) ^ (uint64_t)rb;
-}
-std::unordered_map<Key, Paths64> gNfpCache;
-std::mutex gNfpMutex;
-// Calculate and cache no-fit polygon (NFP) for oriented parts
-static const Paths64& nfp(const Orient& A, const Orient& B, std::unordered_map<Key,Paths64>& localNFP){
+// ───────── NFP cache ─────────
+static const Paths64& nfp(
+    const Orient& A, const Orient& B,
+    std::unordered_map<Key,Paths64>& localNFP,
+    std::unordered_map<Key,Paths64>& gNfpCache,
+    std::mutex& gNfpMutex)
+{
     Key k = kfn(A.id, A.ang, B.id, B.ang);
     auto it = localNFP.find(k);
     if(it != localNFP.end()) return it->second;
 
-    auto git = gNfpCache.find(k);
-    if(git != gNfpCache.end()) {
-        localNFP[k] = git->second;
-        return localNFP[k];
+    {
+        std::lock_guard<std::mutex> lock(gNfpMutex);
+        auto git = gNfpCache.find(k);
+        if(git != gNfpCache.end()) {
+            localNFP[k] = git->second;
+            return localNFP[k];
+        }
     }
 
-    // Вычисляем вне критической секции
     Path64 a = SimplifyPath(A.poly[0], 0.05 * SCALE);
     Path64 b = SimplifyPath(B.poly[0], 0.05 * SCALE);
-
     if (std::abs(Area(a)) / (SCALE * SCALE) < 1.0) {
         Rect64 bb = getBBox(a);
         a = { {bb.left, bb.bottom}, {bb.right, bb.bottom}, {bb.right, bb.top}, {bb.left, bb.top}, {bb.left, bb.bottom} };
@@ -880,10 +886,8 @@ static const Paths64& nfp(const Orient& A, const Orient& B, std::unordered_map<K
         Rect64 bb = getBBox(b);
         b = { {bb.left, bb.bottom}, {bb.right, bb.bottom}, {bb.right, bb.top}, {bb.left, bb.top}, {bb.left, bb.bottom} };
     }
-
     Paths64 res = MinkowskiSum(a, b, true);
 
-    // Защищаем доступ к глобальному кешу
     {
         std::lock_guard<std::mutex> lock(gNfpMutex);
         gNfpCache[k] = res;
@@ -891,8 +895,6 @@ static const Paths64& nfp(const Orient& A, const Orient& B, std::unordered_map<K
     }
     return localNFP[k];
 }
-
-
 
 
 
@@ -916,20 +918,23 @@ static double computeArea(const std::vector<Place>& layout, const std::vector<Ra
 // Функция раскладки для одной случайной перестановки (ОДНА итерация!)
 static std::vector<Place> greedy(
     const std::vector<RawPart>& parts,
-    double W, double H, int step, int grid,
-    unsigned int seed, // <--- добавили seed для рандомизации
-    std::unordered_map<Key,Paths64>& localNFP
+    const std::vector<std::vector<Orient>>& all_orients,
+    double W, double H, int grid,
+    unsigned int seed,
+    std::unordered_map<Key, Paths64>& localNFP,
+    std::unordered_map<Key, Paths64>& sharedNFP,
+    std::mutex& nfp_mutex
 ) {
     auto mm2i = [](double mm) { return static_cast<int64_t>(std::llround(mm * SCALE)); };
     Point64 sheetBR{ mm2i(W), mm2i(H) };
 
     std::vector<RawPart> ord = parts;
-    if (seed != 0) { // первая итерация может быть "неперемешанной"
+    if (seed != 0) {
         std::mt19937 rng(seed);
         std::shuffle(ord.begin(), ord.end(), rng);
     }
 
-    auto orient = makeOrient(ord, step);
+    auto& orient = all_orients; // ссылка на готовое
 
     std::vector<Paths64> placedShapes;
     std::vector<Orient> placedOrient;
@@ -943,7 +948,7 @@ static std::vector<Place> greedy(
 
             std::vector<Point64> cand;
             for(const auto& po : placedOrient) {
-                const Paths64& nfpp = nfp(po, op, localNFP);
+                const Paths64& nfpp = nfp(po, op, localNFP, sharedNFP, nfp_mutex);
                 for(const auto& pth : nfpp)
                     for(const auto& pt : pth)
                         cand.push_back(pt);
@@ -1128,10 +1133,7 @@ void ExportPlacedToDXF(const std::string& filename,
 int main(int argc, char* argv[]) {
     try {
         auto cli = parse(argc, argv);
-        omp_set_num_threads(std::thread::hardware_concurrency());
-        omp_set_nested(0);             // ⛔ запрещаем вложенные параллельные регионы
-        std::cerr << "OpenMP threads: " << omp_get_max_threads() << "\n";
-        // Загружаем детали
+
         std::vector<RawPart> parts;
         for(size_t idx=0; idx<cli.files.size(); ++idx) {
             auto pvec = loadPartsFromJson(cli.files[idx]);
@@ -1144,13 +1146,14 @@ int main(int argc, char* argv[]) {
                 }
         }
 
-        // Храним все варианты из итераций
+        // ВАЖНО: вычисляем повороты только один раз!
+        auto all_orients = makeOrient(parts, cli.rot);
+
         int total_iter = cli.iter > 0 ? cli.iter : 1;
         std::vector<std::vector<Place>> allLayouts(total_iter);
         std::vector<double> allAreas(total_iter, std::numeric_limits<double>::max());
 
-        // Параллельный перебор итераций
-        std::mutex result_mutex;
+        std::atomic<int> finished_iters{0};
         std::vector<std::thread> threads;
 
         for (int it = 0; it < total_iter; ++it) {
@@ -1162,19 +1165,25 @@ int main(int argc, char* argv[]) {
                 );
                 if (it == 0) my_seed = 0;
 
-                auto layout = greedy(parts, cli.W, cli.H, cli.rot, cli.grid, my_seed, localNFP);
+                auto layout = greedy(parts, all_orients, cli.W, cli.H, cli.grid, my_seed,
+                                    localNFP, sharedNFP, nfp_mutex);
                 double area = computeArea(layout, parts);
 
-                // Критическая секция — только запись результатов
-                std::lock_guard<std::mutex> lock(result_mutex);
-                allLayouts[it] = layout;
-                allAreas[it] = area;
+                {
+                    std::lock_guard<std::mutex> lock(result_mutex);
+                    allLayouts[it] = layout;
+                    allAreas[it] = area;
+                }
+
+                int done = ++finished_iters;
+                if (done % 2 == 0 || done == total_iter)
+                    std::cerr << "[PROGRESS] " << done << "/" << total_iter << " итераций завершено\n";
             });
         }
 
-        for (auto& t : threads) t.join();  // дождаться всех
+        for (auto& t : threads) t.join();
 
-        // Находим лучший вариант по площади
+        // --- ОСТАЛЬНОЕ КАК РАНЬШЕ ---
         size_t bestIdx = 0;
         for (size_t i = 1; i < allAreas.size(); ++i)
             if (allAreas[i] < allAreas[bestIdx])
@@ -1190,14 +1199,9 @@ int main(int argc, char* argv[]) {
 
         std::cout << "placed " << finalBest.size() << "/" << parts.size()
                   << " → " << cli.out << "\n";
-
-        // Экспорт оригинальных контуров
         ExportToDXF("output.dxf", parts);
         std::cout << "DXF exported to output.dxf\n";
-
-        // Экспорт размещённой раскладки (с листом)
         ExportPlacedToDXF("layout.dxf", parts, finalBest, cli.W, cli.H);
-
         std::cout << "Placed DXF exported to layout.dxf\n";
 
         return 0;

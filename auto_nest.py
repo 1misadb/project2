@@ -15,15 +15,29 @@ if __name__ == "__main__":
     try:
         sheet = sys.argv[s_idx + 1]
 
-        # Проверим, есть ли -i N
-        if "-i" in sys.argv:
-            i_idx = sys.argv.index("-i")
-            iterations = sys.argv[i_idx + 1]
-            # DXF файлы = всё после sheet, без -i и N
-            dxf_files = sys.argv[s_idx + 2:i_idx] + sys.argv[i_idx + 2:]
-        else:
-            iterations = None
-            dxf_files = sys.argv[s_idx + 2:]
+        iterations = None
+        nums = []
+        dxf_files = []
+
+        i = s_idx + 2
+        while i < len(sys.argv):
+            if sys.argv[i] == "-i":
+                iterations = sys.argv[i + 1]
+                i += 2
+            elif sys.argv[i] == "-n":
+                i += 1
+                while i < len(sys.argv):
+                    arg = sys.argv[i]
+                    if arg.startswith("-"):
+                        break
+                    try:
+                        nums.append(int(arg))
+                    except ValueError:
+                        break
+                    i += 1
+            else:
+                dxf_files.append(sys.argv[i])
+                i += 1
 
         if not dxf_files:
             usage()
@@ -49,7 +63,8 @@ if __name__ == "__main__":
 
     if iterations is not None:
         nest_cmd += ["-i", iterations]
-
+    if nums:
+        nest_cmd += ["-n"] + list(map(str, nums))
     nest_cmd += ["-o", "lay.csv"] + json_files
 
     print("[PY] RUN:", " ".join(nest_cmd))

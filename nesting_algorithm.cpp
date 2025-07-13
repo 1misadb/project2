@@ -8,7 +8,7 @@
 //   • Header‑only зависимость: Clipper2 (https://github.com/AngusJohnson/Clipper2)
 // --------------------------------------------------------------------
 //  Build (g++ / MSVC):
-//      cl /EHsc /std:c++17 /O2 /openmp:llvm clipper3\src\clipper.engine.cpp clipper3\src\clipper.offset.cpp clipper3\src\clipper.rectclip.cpp nesting_algorithm.cpp /Iclipper3\include /I. /Fe:nest.exe
+//      cl /EHsc /std:c++17 /O2 clipper3\src\clipper.engine.cpp clipper3\src\clipper.offset.cpp clipper3\src\clipper.rectclip.cpp nesting_algorithm.cpp /Iclipper3\include /I. /Fe:nest.exe
 // --------------------------------------------------------------------
 // для нестинга полная для раскладки через питон парсер полная схема лежит в редми используюет джейсон пакет предпологает что координаты будут лежать в массиве 
 // в виде poliny так как перебирать багованые координаты через C++ это дело не состоятельное и лучшен использовать готовую провереную итоговую питон библиотеку  
@@ -88,8 +88,8 @@ static Key kfn(int a, int ra, int b, int rb){
 }
 static std::unordered_map<Key, Paths64> gNfpCache;
 static std::mutex gNfpMutex;
-std::mutex gNfpMutex;
 std::mutex result_mutex;
+std::mutex output_mutex;
 std::mutex nfp_mutex;
 std::unordered_map<Key, Paths64> sharedNFP;
 constexpr double SCALE = 1e4;
@@ -842,15 +842,14 @@ static Paths64 rot(const Paths64& src, double s, double c) {
 // Precompute rotated variants for each part
 static std::vector<std::vector<Orient>> makeOrient(const std::vector<RawPart>& parts, int step){
     std::vector<std::vector<Orient>> all(parts.size());
-    for (int i = 0; i < parts.size(); ++i) {
-        const auto& p = parts[i];
+    for (const auto& p : parts) {
         std::vector<Orient> ovec;
         for (int ang = 0; ang < 360; ang += step) {
             double rad = ang * M_PI / 180.0;
             auto r = rot(p.rings, sin(rad), cos(rad));
             ovec.push_back({ unionAll(r), getBBox(r), p.id, ang });
         }
-        all[i] = std::move(ovec);
+        all[p.id] = std::move(ovec);
     }
     return all;
 }
@@ -934,15 +933,20 @@ static std::vector<Place> greedy(
         std::shuffle(ord.begin(), ord.end(), rng);
     }
 
-    auto& orient = all_orients; // ссылка на готовое
-
     std::vector<Paths64> placedShapes;
     std::vector<Orient> placedOrient;
     std::vector<Place> layout;
 
     for (size_t i = 0; i < ord.size(); ++i) {
+        std::cerr << "[STEP] Размещаю деталь " << i << " (ID " << ord[i].id << ") ...\n";
+        if (ord[i].rings.empty()) {
+            std::cerr << "[ERROR] Деталь " << i << " пуста! Пропускаю.\n";
+            continue;
+        }
         bool ok = false; Place best{}; Orient bestO{};
-        for (const auto& op : orient[i]) {
+        const auto& oriSet = all_orients[ ord[i].id ];  
+
+        for (const auto& op : oriSet) {
             if (op.bb.right > sheetBR.x || op.bb.top > sheetBR.y)
                 continue;
 
@@ -969,24 +973,53 @@ static std::vector<Place> greedy(
             std::sort(cand.begin(), cand.end(), [](const Point64& a, const Point64& b){
                 return a.y == b.y ? a.x < b.x : a.y < b.y;
             });
-            if(cand.size() > 512) cand.resize(512);
+            if (cand.size() > 512) {
+                std::cerr << "[WARN] cand.size()=" << cand.size() << ", обрезаю до 512\n";
+                cand.resize(512);
+            }
 
-            for (const auto& c : cand) {
+            double bestCost = 1e100;
+            Place  bestPl{};    // лучший кандидат (id, x, y, ang)
+            Orient bestO{};     // лучший поворот
+            size_t bestIdx = -1;
+            size_t valid = 0;
+            for (size_t idx = 0; idx < cand.size(); ++idx) {
+                const auto& c = cand[idx];
                 Rect64 bb = op.bb; bb.left += c.x; bb.right += c.x; bb.bottom += c.y; bb.top += c.y;
                 if (bb.left < 0 || bb.bottom < 0 || bb.right > sheetBR.x || bb.top > sheetBR.y)
                     continue;
                 Paths64 moved = movePaths(op.poly, c.x, c.y);
                 bool clash = false;
-                for (const auto& pl : placedShapes) { if (overlap(pl, moved)) { clash = true; break; } }
+                for (const auto& pl : placedShapes) {
+                    if (overlap(pl, moved)) {
+                        clash = true; break;
+                    }
+                }
                 if (clash) continue;
-                best = { op.id, Dbl(c.x), Dbl(c.y), op.ang };
-                bestO = op;
-                placedShapes.push_back(std::move(moved));
-                placedOrient.push_back(op);
-                ok = true;
-                break;
+                ++valid;
+                if (valid < 10 || valid % 100 == 0)
+                std::cerr << "  [CAND] #" << idx << ": x=" << Dbl(c.x)
+                        << " y=" << Dbl(c.y)
+                        << " (valid=" << valid << ")\n";
+                // --- Вот здесь критерий: например, минимальный верхний Y (минимальная высота слоя)
+                double cost = Dbl(bb.top);
+                if (cost < bestCost) {
+                    bestCost = cost;
+                    bestPl   = { op.id, Dbl(c.x), Dbl(c.y), op.ang };
+                    bestO    = op;
+                    bestIdx  = idx;
+                }
             }
-            if (ok) break;
+            std::cerr << "[STEP] Всего валидных кандидатов: " << valid << '\n';
+            // --- если нашёлся хоть один валидный кандидат — добавляем только его
+            if (bestCost < 1e100) {
+                auto& c = cand[bestIdx];
+                Paths64 moved = movePaths(op.poly, I64mm(bestPl.x), I64mm(bestPl.y));
+                placedShapes.push_back(std::move(moved));
+                placedOrient.push_back(bestO);
+                layout.push_back(bestPl);
+                ok = true;
+            }
         }
         if (ok) layout.push_back(best);
     }
@@ -997,7 +1030,7 @@ static std::vector<Place> greedy(
 struct CLI{
     double W = 0, H = 0;
     int rot = DEFAULT_ROT_STEP;
-    int grid = 10;
+    int grid = 100;
     std::string out = "layout.csv";
     std::vector<std::string> files;
     std::vector<int> nums;
@@ -1129,6 +1162,7 @@ void ExportPlacedToDXF(const std::string& filename,
     }
     f << "0\nENDSEC\n0\nEOF\n";
 }
+
 // ───────── main ─────────
 int main(int argc, char* argv[]) {
     try {
@@ -1145,17 +1179,29 @@ int main(int argc, char* argv[]) {
                     parts.push_back(p);
                 }
         }
-
+        
         // ВАЖНО: вычисляем повороты только один раз!
         auto all_orients = makeOrient(parts, cli.rot);
-
+        for (size_t i = 0; i < parts.size(); ++i) {
+            auto& p = parts[i];
+            if (p.rings.empty()) {
+                std::cerr << "[WARN] Part #" << i << " пустой!\n";
+            } else {
+                auto bb = getBBox(p.rings[0]);
+                std::cerr << "[CHECK] Part #" << i
+                        << " bbox: " << Dbl(bb.right - bb.left) << "x" << Dbl(bb.top - bb.bottom)
+                        << " мм, area: " << p.area << " мм²\n";
+            }
+        }
         int total_iter = cli.iter > 0 ? cli.iter : 1;
         std::vector<std::vector<Place>> allLayouts(total_iter);
+        std::cerr << "[INFO] Загружено " << parts.size() << " деталей\n";
+        std::cerr << "[INFO] Начинаю " << total_iter << " итераций...\n";
         std::vector<double> allAreas(total_iter, std::numeric_limits<double>::max());
 
         std::atomic<int> finished_iters{0};
         std::vector<std::thread> threads;
-
+        
         for (int it = 0; it < total_iter; ++it) {
             threads.emplace_back([&, it]() {
                 std::unordered_map<Key, Paths64> localNFP;
@@ -1164,7 +1210,7 @@ int main(int argc, char* argv[]) {
                     std::chrono::steady_clock::now().time_since_epoch().count() + it * 1337
                 );
                 if (it == 0) my_seed = 0;
-
+                std::cerr << "[INFO] Итер " << it+1 << "/" << total_iter << "...\n";
                 auto layout = greedy(parts, all_orients, cli.W, cli.H, cli.grid, my_seed,
                                     localNFP, sharedNFP, nfp_mutex);
                 double area = computeArea(layout, parts);
@@ -1174,15 +1220,20 @@ int main(int argc, char* argv[]) {
                     allLayouts[it] = layout;
                     allAreas[it] = area;
                 }
-
+                {
+                    std::lock_guard<std::mutex> out_lock(output_mutex);
+                    std::cerr << "[DONE] Итерация " << it+1 << ": размещено "
+                            << layout.size() << "/" << parts.size() << " деталей\n" << std::flush;
+                }
                 int done = ++finished_iters;
-                if (done % 2 == 0 || done == total_iter)
+                if (done % 2 == 0 || done == total_iter) {
+                    std::lock_guard<std::mutex> out_lock(output_mutex);
                     std::cerr << "[PROGRESS] " << done << "/" << total_iter << " итераций завершено\n";
+                }
             });
         }
 
-        for (auto& t : threads) t.join();
-
+        for (auto& th : threads) th.join();
         // --- ОСТАЛЬНОЕ КАК РАНЬШЕ ---
         size_t bestIdx = 0;
         for (size_t i = 1; i < allAreas.size(); ++i)

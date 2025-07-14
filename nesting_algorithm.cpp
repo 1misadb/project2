@@ -1284,7 +1284,7 @@ void ExportPlacedToDXF(const std::string& filename,
 int main(int argc, char* argv[]) {
     try {
         auto cli = parse(argc, argv);
-
+        
         std::vector<RawPart> parts;
         for(size_t idx=0; idx<cli.files.size(); ++idx) {
             auto pvec = loadPartsFromJson(cli.files[idx]);
@@ -1349,7 +1349,7 @@ int main(int argc, char* argv[]) {
                 }
             });
         }
-
+        
         for (auto& th : threads) th.join();
         {
             std::lock_guard<std::mutex> out_lock(output_mutex);

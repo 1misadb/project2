@@ -896,7 +896,27 @@ static const Paths64& nfp(
 }
 
 
+static std::vector<Point64> candidates(const std::vector<Paths64>& placed, const Paths64& current, int grid) {
+    std::vector<Point64> out;
 
+    for (const auto& shape : placed) {
+        Rect64 bb = getBBox(shape);
+        out.push_back({bb.left, bb.bottom});
+        out.push_back({bb.right, bb.bottom});
+        out.push_back({bb.left, bb.top});
+        out.push_back({bb.right, bb.top});
+    }
+
+    // добавим сетку по всему листу
+    int64_t step = static_cast<int64_t>(std::llround(grid * SCALE));
+    for (int64_t y = 0; y <= 1e6; y += step) {
+        for (int64_t x = 0; x <= 1e6; x += step) {
+            out.push_back({x, y});
+        }
+    }
+
+    return out;
+}
 // ───────── greedy placer ─────────
 // Place a set of parts onto the sheet using a simple greedy algorithm
 struct Place{int id; double x,y; int ang;};
@@ -913,7 +933,10 @@ static double computeArea(const std::vector<Place>& layout, const std::vector<Ra
     Rect64 bb = getBBox(all);
     return Dbl(bb.right - bb.left) * Dbl(bb.top - bb.bottom);
 }
-
+bool overlap(const Paths64& a, const Paths64& b) {
+    Paths64 isect = Intersect(a, b, FillRule::NonZero);
+    return !isect.empty();
+}
 // Функция раскладки для одной случайной перестановки (ОДНА итерация!)
 static std::vector<Place> greedy(
     const std::vector<RawPart>& parts,
@@ -949,34 +972,42 @@ static std::vector<Place> greedy(
         for (const auto& op : oriSet) {
             if (op.bb.right > sheetBR.x || op.bb.top > sheetBR.y)
                 continue;
+        std::vector<Point64> cand;  // просто объявление (БЕЗ = ...)
 
-            std::vector<Point64> cand;
-            for(const auto& po : placedOrient) {
-                const Paths64& nfpp = nfp(po, op, localNFP, sharedNFP, nfp_mutex);
-                for(const auto& pth : nfpp)
-                    for(const auto& pt : pth)
-                        cand.push_back(pt);
-            }
-            cand.push_back({0,0});
-            for(const auto& ps : placedShapes){
-                Rect64 bb = getBBox(ps);
-                cand.push_back({bb.left, bb.bottom});
-                cand.push_back({bb.right, bb.bottom});
-                cand.push_back({bb.left, bb.top});
-                cand.push_back({bb.right, bb.top});
-            }
-            int64_t step_i = mm2i(grid);
-            for(int64_t y=0; y<=sheetBR.y; y+=step_i)
-                for(int64_t x=0; x<=sheetBR.x; x+=step_i)
-                    cand.push_back({x,y});
+        auto generated = candidates(placedShapes, op.poly, grid);
+        cand.insert(cand.end(), generated.begin(), generated.end());
 
-            std::sort(cand.begin(), cand.end(), [](const Point64& a, const Point64& b){
-                return a.y == b.y ? a.x < b.x : a.y < b.y;
-            });
-            if (cand.size() > 512) {
-                std::cerr << "[WARN] cand.size()=" << cand.size() << ", обрезаю до 512\n";
-                cand.resize(512);
-            }
+        for(const auto& po : placedOrient) {
+            const Paths64& nfpp = nfp(po, op, localNFP, sharedNFP, nfp_mutex);
+            for(const auto& pth : nfpp)
+                for(const auto& pt : pth)
+                    cand.push_back(pt);
+        }
+        cand.push_back({0,0});
+        for(const auto& ps : placedShapes){
+            Rect64 bb = getBBox(ps);
+            cand.push_back({bb.left, bb.bottom});
+            cand.push_back({bb.right, bb.bottom});
+            cand.push_back({bb.left, bb.top});
+            cand.push_back({bb.right, bb.top});
+        }
+        int64_t step_i = mm2i(grid);
+        for(int64_t y=0; y<=sheetBR.y; y+=step_i)
+            for(int64_t x=0; x<=sheetBR.x; x+=step_i)
+                cand.push_back({x,y});
+
+        // --- Удалить дубликаты
+        std::sort(cand.begin(), cand.end(), [](const Point64& a, const Point64& b) {
+            return a.y == b.y ? a.x < b.x : a.y < b.y;
+        });
+        cand.erase(std::unique(cand.begin(), cand.end(), [](const Point64& a, const Point64& b) {
+            return a.x == b.x && a.y == b.y;
+        }), cand.end());
+
+        // --- Ограничить число кандидатов
+        const size_t CAND_LIMIT = 2000;
+        if (cand.size() > CAND_LIMIT) cand.resize(CAND_LIMIT);
+
 
             double bestCost = 1e100;
             Place  bestPl{};    // лучший кандидат (id, x, y, ang)
@@ -991,16 +1022,22 @@ static std::vector<Place> greedy(
                 Paths64 moved = movePaths(op.poly, c.x, c.y);
                 bool clash = false;
                 for (const auto& pl : placedShapes) {
-                    if (overlap(pl, moved)) {
-                        clash = true; break;
+                    Paths64 isect;
+                    isect = Intersect(pl, moved, FillRule::NonZero);
+                    if (!isect.empty()) {
+                        clash = true;
+                        break;
                     }
                 }
                 if (clash) continue;
                 ++valid;
-                if (valid < 10 || valid % 100 == 0)
-                std::cerr << "  [CAND] #" << idx << ": x=" << Dbl(c.x)
-                        << " y=" << Dbl(c.y)
-                        << " (valid=" << valid << ")\n";
+                if (valid <= 3 || valid == 100 || valid == 500 || valid == 1000) {
+                    std::lock_guard<std::mutex> lock(output_mutex);
+                    std::cerr << "  [CAND] #" << idx << ": x=" << Dbl(c.x)
+                            << " y=" << Dbl(c.y)
+                            << " (valid=" << valid << ")\n";
+                }
+
                 // --- Вот здесь критерий: например, минимальный верхний Y (минимальная высота слоя)
                 double cost = Dbl(bb.top);
                 if (cost < bestCost) {
@@ -1019,9 +1056,13 @@ static std::vector<Place> greedy(
                 placedOrient.push_back(bestO);
                 layout.push_back(bestPl);
                 ok = true;
+                break;
             }
+            
         }
-        if (ok) layout.push_back(best);
+            if (!ok) {
+                std::cerr << "[WARN] Part " << i << " не удалось разместить – пропускаю\n";
+            }
     }
     return layout;
 }
@@ -1078,6 +1119,7 @@ static CLI parse(int ac, char** av){
         }else if(a=="-g"||a=="--grid"){
             if(i+1>=ac) throw std::runtime_error("missing value for --grid");
             c.grid = std::stoi(av[++i]);
+            if(c.grid <= 0) throw std::runtime_error("--grid must be > 0");
         }else if(a=="-n"||a=="--num"){
             while (i+1<ac && std::isdigit(av[i+1][0]))
             {
@@ -1234,6 +1276,10 @@ int main(int argc, char* argv[]) {
         }
 
         for (auto& th : threads) th.join();
+        {
+            std::lock_guard<std::mutex> out_lock(output_mutex);
+            std::cerr << "[INFO] Все итерации завершены\n";
+        }
         // --- ОСТАЛЬНОЕ КАК РАНЬШЕ ---
         size_t bestIdx = 0;
         for (size_t i = 1; i < allAreas.size(); ++i)

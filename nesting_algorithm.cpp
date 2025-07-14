@@ -159,10 +159,10 @@ static Paths64 unionAll(const Paths64& in){
 
 // Test for polygon overlap
 
-static bool overlap(const Paths64&a,const Paths64&b){
-    return !Intersect(a,b,FillRule::NonZero).empty();
+bool overlap(const Paths64& a, const Paths64& b) {
+    Paths64 isect = Intersect(a, b, FillRule::NonZero);
+    return !isect.empty();
 }
-
 // Translate polygon set by (dx,dy)
 static Paths64 movePaths(const Paths64& src, int64_t dx, int64_t dy){
     Paths64 out; out.reserve(src.size());
@@ -933,10 +933,6 @@ static double computeArea(const std::vector<Place>& layout, const std::vector<Ra
     Rect64 bb = getBBox(all);
     return Dbl(bb.right - bb.left) * Dbl(bb.top - bb.bottom);
 }
-bool overlap(const Paths64& a, const Paths64& b) {
-    Paths64 isect = Intersect(a, b, FillRule::NonZero);
-    return !isect.empty();
-}
 // Функция раскладки для одной случайной перестановки (ОДНА итерация!)
 static std::vector<Place> greedy(
     const std::vector<RawPart>& parts,
@@ -1022,9 +1018,11 @@ static std::vector<Place> greedy(
                 Paths64 moved = movePaths(op.poly, c.x, c.y);
                 bool clash = false;
                 for (const auto& pl : placedShapes) {
-                    Paths64 isect;
-                    isect = Intersect(pl, moved, FillRule::NonZero);
-                    if (!isect.empty()) {
+                    Rect64 bbPl = getBBox(pl);
+                    if (bbPl.right < bb.left || bbPl.left > bb.right ||
+                        bbPl.top < bb.bottom || bbPl.bottom > bb.top)
+                        continue;
+                    if (overlap(pl, moved)) {
                         clash = true;
                         break;
                     }

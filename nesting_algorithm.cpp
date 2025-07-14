@@ -160,8 +160,10 @@ static Paths64 unionAll(const Paths64& in){
 // Test for polygon overlap
 
 bool overlap(const Paths64& a, const Paths64& b) {
-    Paths64 isect = Intersect(a, b, FillRule::NonZero);
-    return !isect.empty();
+    Paths64 ua = Union(a, FillRule::NonZero);
+    Paths64 ub = Union(b, FillRule::NonZero);
+    Paths64 isect = Intersect(ua, ub, FillRule::NonZero);
+    return std::abs(Area(isect)) > 0.0;
 }
 // Translate polygon set by (dx,dy)
 static Paths64 movePaths(const Paths64& src, int64_t dx, int64_t dy){
@@ -1017,12 +1019,21 @@ static std::vector<Place> greedy(
                     continue;
                 Paths64 moved = movePaths(op.poly, c.x, c.y);
                 bool clash = false;
-                for (const auto& pl : placedShapes) {
+                for (size_t pi = 0; pi < placedShapes.size(); ++pi) {
+                    const auto& pl = placedShapes[pi];
                     Rect64 bbPl = getBBox(pl);
                     if (bbPl.right < bb.left || bbPl.left > bb.right ||
                         bbPl.top < bb.bottom || bbPl.bottom > bb.top)
                         continue;
                     if (overlap(pl, moved)) {
+                        {
+                            std::lock_guard<std::mutex> lock(output_mutex);
+                            std::cerr << "[OVERLAP] new part " << ord[i].id
+                                    << " at (" << Dbl(c.x) << "," << Dbl(c.y)
+                                    << ") ang=" << op.ang
+                                    << " intersects placed part "
+                                    << placedOrient[pi].id << "\n";
+                        }
                         clash = true;
                         break;
                     }

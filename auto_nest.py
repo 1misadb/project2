@@ -4,12 +4,13 @@ import os
 
 def usage():
     print("Пример использования:")
-    print("  python auto_nest.py -s 2000x2000 [-i N] file1.dxf file2.dxf ...")
+    print("  python auto_nest.py -s 2000x2000 [-i N] part1.dxf:3 part2.dxf:1 ...")
     sys.exit(1)
 
 if __name__ == "__main__":
     if "-s" not in sys.argv or len(sys.argv) < 4:
         usage()
+
 
     s_idx = sys.argv.index("-s")
     try:
@@ -17,7 +18,7 @@ if __name__ == "__main__":
 
         iterations = None
         nums = []
-        dxf_files = []
+        dxf_files = []  # список кортежей (имя, количество)
 
         i = s_idx + 2
         while i < len(sys.argv):
@@ -36,7 +37,17 @@ if __name__ == "__main__":
                         break
                     i += 1
             else:
-                dxf_files.append(sys.argv[i])
+                arg = sys.argv[i]
+                if ":" in arg:
+                    fname, nstr = arg.rsplit(":", 1)
+                    try:
+                        n = int(nstr)
+                    except Exception:
+                        print(f"[ERROR] Некорректный формат количества: {arg}")
+                        usage()
+                    dxf_files.append((fname, n))
+                else:
+                    dxf_files.append((arg, 1))
                 i += 1
 
         if not dxf_files:
@@ -46,16 +57,15 @@ if __name__ == "__main__":
         usage()
 
     json_files = []
-    for dxf in dxf_files:
+    python_exec = r"C:\Users\User\AppData\Local\Programs\Python\Python39\python.exe"
+    for dxf, repeat in dxf_files:
         json_out = os.path.splitext(dxf)[0] + ".json"
-        print(f"[PY] DXF → JSON: {dxf} -> {json_out}")
-
-        # ✅ Путь к твоему Python39
-        python_exec = r"C:\Users\User\AppData\Local\Programs\Python\Python39\python.exe"
-
-        # ✅ Вызов конвертера
+        print(f"[PY] DXF → JSON: {dxf} -> {json_out} (repeat={repeat})")
+        cmd = [python_exec, "extract_all_shapes.py", dxf, json_out]
+        if repeat > 1:
+            cmd.append(f"repeat={repeat}")
         try:
-            subprocess.check_call([python_exec, "extract_all_shapes.py", dxf, json_out])
+            subprocess.check_call(cmd)
         except subprocess.CalledProcessError as e:
             print(f"[ERROR] Failed to convert {dxf}: {e}")
             sys.exit(1)

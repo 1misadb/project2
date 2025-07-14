@@ -32,6 +32,9 @@
 #include <chrono>
 #include <atomic>
 #include <thread>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 #define _USE_MATH_DEFINES
 #include <math.h>
 
@@ -94,8 +97,25 @@ std::mutex output_mutex;
 std::mutex nfp_mutex;
 std::unordered_map<Key, Paths64> sharedNFP;
 constexpr double SCALE = 1e4;
-constexpr int DEFAULT_ROT_STEP = 45;
-constexpr double TOL_MM = 1.0;                 // base tolerance in mm
+constexpr int DEFAULT_ROT_STEP = 10;
+constexpr double TOL_MM = 1.0;       
+// ───────── CLI ─────────
+struct CLI{
+    double W = 0, H = 0;
+    int rot = DEFAULT_ROT_STEP;
+    int grid = 0.1;
+    std::string out = "layout.csv";
+    std::vector<std::string> files;
+    std::vector<int> nums;
+    int num = 1;
+    bool joinSegments = false;
+    int iter = 1; 
+    int cand_limit = 100000;
+    int nfp_limit = 20000;
+    int overlap_limit = 20000;
+    double time_limit = 3000.0;
+};         
+ // base tolerance in mm
 inline int64_t tol_mm() { return llround(TOL_MM * SCALE); }
 // Преобразование double → int64 с учетом SCALE
 inline int64_t I64(double v) {          // из мм → int64
@@ -847,6 +867,10 @@ static std::vector<RawPart> loadPartsFromJson(const std::string& filename)
             parts.push_back(std::move(part));
         }
     }
+    // Сортировка по убыванию площади
+    std::sort(parts.begin(), parts.end(), [](const RawPart& a, const RawPart& b) {
+        return a.area > b.area;
+    });
     return parts;
 }
 
@@ -976,8 +1000,8 @@ static double computeArea(const std::vector<Place>& layout, const std::vector<Ra
     Rect64 bb = getBBox(all);
     return Dbl(bb.right - bb.left) * Dbl(bb.top - bb.bottom);
 }
-const int MAX_OVERLAP_CHECKS = 200;           // Максимум overlap-проверок на одну деталь
-const double MAX_TIME_PER_PART = 2.0;         // Секунд на одну деталь
+const int MAX_OVERLAP_CHECKS = 50;           // Максимум overlap-проверок на одну деталь (было 200)
+const double MAX_TIME_PER_PART = 0.5;        // Секунд на одну деталь (было 2.0)
 
 auto part_start = std::chrono::steady_clock::now();
 int overlap_checks = 0;
@@ -989,8 +1013,19 @@ static std::vector<Place> greedy(
     unsigned int seed,
     std::unordered_map<Key, Paths64>& localNFP,
     std::unordered_map<Key, Paths64>& sharedNFP,
-    std::mutex& nfp_mutex
+    std::mutex& nfp_mutex,
+    const CLI* cli_ptr
 ) {
+    size_t CAND_LIMIT = 1e6;
+    size_t NFP_LIMIT = 50000;
+    int MAX_OVERLAP_CHECKS = 50000;
+    double MAX_TIME_PER_PART = 100000.0;
+    if (cli_ptr) {
+        CAND_LIMIT = cli_ptr->cand_limit;
+        NFP_LIMIT = cli_ptr->nfp_limit;
+        MAX_OVERLAP_CHECKS = cli_ptr->overlap_limit;
+        MAX_TIME_PER_PART = cli_ptr->time_limit;
+    }
     auto mm2i = [](double mm) { return static_cast<int64_t>(std::llround(mm * SCALE)); };
     Point64 sheetBR{ mm2i(W), mm2i(H) };
 
@@ -1010,189 +1045,161 @@ static std::vector<Place> greedy(
             std::cerr << "[ERROR] Деталь " << i << " пуста! Пропускаю.\n";
             continue;
         }
+        auto t_start = std::chrono::steady_clock::now();
         bool ok = false; Place best{}; Orient bestO{};
         const auto& oriSet = all_orients[ ord[i].id ];
         size_t invalidBB_total = 0;
         bool firstTooBig = (i == 0);
 
-        for (const auto& op : oriSet) {
-            if (op.bb.right <= sheetBR.x && op.bb.top <= sheetBR.y)
-                if(i==0) firstTooBig = false;
-            if (op.bb.right > sheetBR.x || op.bb.top > sheetBR.y)
-                continue;
+        // --- Параллелизация по ориентациям ---
+        int bestOrientIdx = -1;
+        double bestCost = 1e100;
+        Place bestPl{};
+        Orient bestOrient{};
 
-            // ----------- Новый сбор кандидатов! -----------
-            const size_t CAND_LIMIT = 1000;   // сколько максимум рассматривать кандидатов
-            const size_t NFP_LIMIT = 200;     // сколько максимум взять точек NFP для одного ориента
+#pragma omp parallel
+        {
+            int localBestOrientIdx = -1;
+            double localBestCost = 1e100;
+            Place localBestPl{};
+            Orient localBestOrient{};
+#pragma omp for nowait
+            for (int opIdx = 0; opIdx < (int)oriSet.size(); ++opIdx) {
+                const auto& op = oriSet[opIdx];
+                if (op.bb.right <= sheetBR.x && op.bb.top <= sheetBR.y)
+                    if(i==0) firstTooBig = false;
+                if (op.bb.right > sheetBR.x || op.bb.top > sheetBR.y)
+                    continue;
 
-            std::vector<Point64> cand;
-            cand.reserve(CAND_LIMIT);
-
-            // 1. (0,0) — всегда
-            cand.push_back({0,0});
-
-            // 2. bbox corners уже размещённых деталей
-            for(const auto& ps : placedShapes){
-                if (cand.size() >= CAND_LIMIT) break;
-                Rect64 bb = getBBox(ps);
-                cand.push_back({bb.left, bb.bottom});
-                if (cand.size() >= CAND_LIMIT) break;
-                cand.push_back({bb.right, bb.bottom});
-                if (cand.size() >= CAND_LIMIT) break;
-                cand.push_back({bb.left, bb.top});
-                if (cand.size() >= CAND_LIMIT) break;
-                cand.push_back({bb.right, bb.top});
-            }
-
-            // 3. сетка по листу
-            int64_t step = mm2i(grid);
-            for(int64_t y=0; y<=sheetBR.y && cand.size()<CAND_LIMIT; y+=step) {
-                for(int64_t x=0; x<=sheetBR.x && cand.size()<CAND_LIMIT; x+=step) {
-                    cand.push_back({x,y});
+                const size_t CAND_LIMIT = 100;   // Было 1000
+                const size_t NFP_LIMIT = 20;     // Было 200
+                std::vector<Point64> cand;
+                cand.reserve(CAND_LIMIT);
+                cand.push_back({0,0});
+                for(const auto& ps : placedShapes){
+                    if (cand.size() >= CAND_LIMIT) break;
+                    Rect64 bb = getBBox(ps);
+                    cand.push_back({bb.left, bb.bottom});
+                    if (cand.size() >= CAND_LIMIT) break;
+                    cand.push_back({bb.right, bb.bottom});
+                    if (cand.size() >= CAND_LIMIT) break;
+                    cand.push_back({bb.left, bb.top});
+                    if (cand.size() >= CAND_LIMIT) break;
+                    cand.push_back({bb.right, bb.top});
                 }
-            }
-
-            // 4. NFP кандидаты
-            size_t nfp_count = 0;
-            for(const auto& po : placedOrient) {
-                if (cand.size() >= CAND_LIMIT) break;
-                const Paths64& nfpp = nfp(po, op, localNFP, sharedNFP, nfp_mutex);
-                for(const auto& pth : nfpp) {
-                    for(const auto& pt : pth) {
+                int64_t step = mm2i(grid);
+                for(int64_t y=0; y<=sheetBR.y && cand.size()<CAND_LIMIT; y+=step) {
+                    for(int64_t x=0; x<=sheetBR.x && cand.size()<CAND_LIMIT; x+=step) {
+                        cand.push_back({x,y});
+                    }
+                }
+                size_t nfp_count = 0;
+                for(const auto& po : placedOrient) {
+                    if (cand.size() >= CAND_LIMIT) break;
+                    const Paths64& nfpp = nfp(po, op, localNFP, sharedNFP, nfp_mutex);
+                    for(const auto& pth : nfpp) {
+                        for(const auto& pt : pth) {
+                            if (cand.size() >= CAND_LIMIT || nfp_count >= NFP_LIMIT) break;
+                            cand.push_back(pt);
+                            nfp_count++;
+                        }
                         if (cand.size() >= CAND_LIMIT || nfp_count >= NFP_LIMIT) break;
-                        cand.push_back(pt);
-                        nfp_count++;
                     }
-                    if (cand.size() >= CAND_LIMIT || nfp_count >= NFP_LIMIT) break;
+                    if (cand.size() >= CAND_LIMIT) break;
                 }
-                if (cand.size() >= CAND_LIMIT) break;
-            }
-
-            // --- Удалить дубликаты ---
-            if (cand.size() > 1) {
-                std::sort(cand.begin(), cand.end(), [](const Point64& a, const Point64& b) {
-                    return a.y == b.y ? a.x < b.x : a.y < b.y;
-                });
-                cand.erase(std::unique(cand.begin(), cand.end(), [](const Point64& a, const Point64& b) {
-                    return a.x == b.x && a.y == b.y;
-                }), cand.end());
-            }
-            if (cand.size() > CAND_LIMIT)
-                cand.resize(CAND_LIMIT);
-            // ----------- Конец сбора кандидатов -----------
-
-            double bestCost = 1e100;
-            Place  bestPl{};    // лучший кандидат (id, x, y, ang)
-            Orient bestOrient{};     // лучший поворот
-            size_t bestIdx = -1;
-            size_t valid = 0;
-            for (size_t idx = 0; idx < cand.size(); ++idx) {
-            // --- Лимиты времени и проверок ---
-            if (overlap_checks >= MAX_OVERLAP_CHECKS) {
-                std::cerr << "[LIMIT] Превышено число overlap-проверок для детали " << i << " — пропускаю\n";
-                break;
-            }
-            auto now = std::chrono::steady_clock::now();
-            double elapsed = std::chrono::duration<double>(now - part_start).count();
-            if (elapsed > MAX_TIME_PER_PART) {
-                std::cerr << "[TIMEOUT] Время размещения детали " << i << " превысило лимит (" << elapsed << " сек) — пропускаю\n";
-                break;
-            }
-
-            const auto& c = cand[idx];
-            Rect64 bb = op.bb; bb.left += c.x; bb.right += c.x; bb.bottom += c.y; bb.top += c.y;
-            if (bb.left < 0 || bb.bottom < 0 || bb.right > sheetBR.x || bb.top > sheetBR.y){
-                ++invalidBB_total;
-                continue;
-            }
-            Paths64 moved = movePaths(op.poly, c.x, c.y);
-            bool clash = false;
-            for (size_t pi = 0; pi < placedShapes.size(); ++pi) {
-                const auto& pl = placedShapes[pi];
-                Rect64 bbPl = getBBox(pl);
-                Rect64 bbMoved = getBBox(moved);
-                double areaA = areaMM2(pl);
-                double areaB = areaMM2(moved);
-                if (idx < 20 || idx % 1000 == 0) {
-                    std::lock_guard<std::mutex> lock(output_mutex);
-                    std::cerr << "[CHECK] Aarea=" << areaA << " bb=" << rectToStr(bbPl)
-                            << " Barea=" << areaB << " bb=" << rectToStr(bbMoved) << "\n";
+                if (cand.size() > 1) {
+                    std::sort(cand.begin(), cand.end(), [](const Point64& a, const Point64& b) {
+                        return a.y == b.y ? a.x < b.x : a.y < b.y;
+                    });
+                    cand.erase(std::unique(cand.begin(), cand.end(), [](const Point64& a, const Point64& b) {
+                        return a.x == b.x && a.y == b.y;
+                    }), cand.end());
                 }
-                // 💡 Пропускаем всё, что точно не пересекается по bbox
-                if (bbPl.right < bbMoved.left || bbPl.left > bbMoved.right ||
-                    bbPl.top   < bbMoved.bottom || bbPl.bottom > bbMoved.top)
-                    continue;
+                if (cand.size() > CAND_LIMIT)
+                    cand.resize(CAND_LIMIT);
 
-                // Только теперь вызываем дорогой overlap()
-                overlap_checks++; // <--- увеличиваем здесь
-                bool ov = overlap(pl, moved);
-
-                // [опционально] лог при "нелогичном" фолсе
-                if (ov && (bbPl.right < bbMoved.left || bbPl.left > bbMoved.right ||
-                        bbPl.top < bbMoved.bottom || bbPl.bottom > bbMoved.top)) {
-                    std::lock_guard<std::mutex> lock(output_mutex);
-                    std::cerr << "[DEBUG] Overlap true but bbox says false!\n";
-                }
-
-                if (bbPl.right < bb.left || bbPl.left > bb.right ||
-                    bbPl.top < bb.bottom || bbPl.bottom > bb.top)
-                    continue;
-                if (ov) {
-                    {
-                        std::lock_guard<std::mutex> lock(output_mutex);
-                        std::cerr << "[OVERLAP] new part " << ord[i].id
-                                << " at (" << Dbl(c.x) << "," << Dbl(c.y)
-                                << ") ang=" << op.ang
-                                << " intersects placed part "
-                                << placedOrient[pi].id << "\n";
+                size_t valid = 0;
+                for (size_t idx = 0; idx < cand.size(); ++idx) {
+                    if (overlap_checks >= MAX_OVERLAP_CHECKS) break;
+                    auto now = std::chrono::steady_clock::now();
+                    double elapsed = std::chrono::duration<double>(now - part_start).count();
+                    if (elapsed > MAX_TIME_PER_PART) break;
+                    const auto& c = cand[idx];
+                    Rect64 bb = op.bb; bb.left += c.x; bb.right += c.x; bb.bottom += c.y; bb.top += c.y;
+                    if (bb.left < 0 || bb.bottom < 0 || bb.right > sheetBR.x || bb.top > sheetBR.y){
+                        ++invalidBB_total;
+                        continue;
                     }
-                    clash = true;
-                    break;
+                    Paths64 moved = movePaths(op.poly, c.x, c.y);
+                    bool clash = false;
+                    for (size_t pi = 0; pi < placedShapes.size(); ++pi) {
+                        const auto& pl = placedShapes[pi];
+                        Rect64 bbPl = getBBox(pl);
+                        Rect64 bbMoved = getBBox(moved);
+                        if (bbPl.right < bbMoved.left || bbPl.left > bbMoved.right ||
+                            bbPl.top   < bbMoved.bottom || bbPl.bottom > bbMoved.top)
+                            continue;
+                        overlap_checks++;
+                        bool ov = overlap(pl, moved);
+                        if (bbPl.right < bb.left || bbPl.left > bb.right ||
+                            bbPl.top < bb.bottom || bbPl.bottom > bb.top)
+                            continue;
+                        if (ov) {
+                            clash = true;
+                            break;
+                        }
+                    }
+                    if (clash) continue;
+                    ++valid;
+                    double cost = Dbl(bb.top);
+                    if (cost < localBestCost) {
+                        localBestCost   = cost;
+                        localBestPl     = { op.id, Dbl(c.x), Dbl(c.y), op.ang };
+                        localBestOrient = op;
+                        localBestOrientIdx = opIdx;
+                    }
                 }
             }
-            if (clash) continue;
-            ++valid;
-            if (valid <= 10 || valid == 100 || valid == 500 || valid == 1000) {
+            // --- Критическая секция для выбора глобального лучшего ---
+#pragma omp critical
+            {
+                if (localBestCost < bestCost) {
+                    bestCost = localBestCost;
+                    bestPl = localBestPl;
+                    bestOrient = localBestOrient;
+                    bestOrientIdx = localBestOrientIdx;
+                }
+            }
+        }
+        // --- после параллельного цикла ---
+        if (bestCost < 1e100 && bestOrientIdx >= 0) {
+            auto& op = oriSet[bestOrientIdx];
+            auto& c = bestPl;
+            Paths64 moved = movePaths(op.poly, I64mm(c.x), I64mm(c.y));
+            placedShapes.push_back(std::move(moved));
+            placedOrient.push_back(op);
+            layout.push_back(c);
+            {
                 std::lock_guard<std::mutex> lock(output_mutex);
-                std::cerr << "  [CAND] #" << idx << ": x=" << Dbl(c.x)
-                        << " y=" << Dbl(c.y)
-                        << " (valid=" << valid << ")\n";
+                std::cerr << "[PLACED] Part " << i << " (ID " << op.id << ") at (x=" << c.x << ", y=" << c.y << ", angle=" << c.ang << ")\n";
             }
-
-            // --- Вот здесь критерий: например, минимальный верхний Y (минимальная высота слоя)
-            double cost = Dbl(bb.top);
-            if (cost < bestCost) {
-                bestCost   = cost;
-                bestPl     = { op.id, Dbl(c.x), Dbl(c.y), op.ang };
-                bestOrient = op;
-                bestIdx    = idx;
+            if(i==0){
+                Rect64 fb = op.bb;
+                fb.left   += I64mm(c.x);
+                fb.right  += I64mm(c.x);
+                fb.bottom += I64mm(c.y);
+                fb.top    += I64mm(c.y);
+                std::lock_guard<std::mutex> lock(output_mutex);
+                std::cerr << "[FIRST] bbox=" << rectToStr(fb)
+                          << " pos=(" << c.x << "," << c.y << ")\n";
             }
+            ok = true;
         }
-            std::cerr << "[STEP] Всего валидных кандидатов: " << valid << '\n';
-            // --- если нашёлся хоть один валидный кандидат — добавляем только его
-            if (bestCost < 1e100) {
-                auto& c = cand[bestIdx];
-                Paths64 moved = movePaths(op.poly, I64mm(bestPl.x), I64mm(bestPl.y));
-                placedShapes.push_back(std::move(moved));
-                placedOrient.push_back(bestOrient);
-                layout.push_back(bestPl);
-                if(i==0){
-                    Rect64 fb = bestOrient.bb;
-                    fb.left   += I64mm(bestPl.x);
-                    fb.right  += I64mm(bestPl.x);
-                    fb.bottom += I64mm(bestPl.y);
-                    fb.top    += I64mm(bestPl.y);
-                    std::lock_guard<std::mutex> lock(output_mutex);
-                    std::cerr << "[FIRST] bbox=" << rectToStr(fb)
-                              << " pos=(" << bestPl.x << "," << bestPl.y << ")\n";
-                }
-                ok = true;
-                break;
-            }
-
-        }
+        auto t_end = std::chrono::steady_clock::now();
+        double t_sec = std::chrono::duration<double>(t_end - t_start).count();
         {
             std::lock_guard<std::mutex> lock(output_mutex);
+            std::cerr << "[INFO] Время размещения детали " << i << ": " << t_sec << " сек\n";
             std::cerr << "[INFO] Невалидных кандидатов по bbox для детали " << i
                       << ": " << invalidBB_total << "\n";
             if(i==0 && firstTooBig)
@@ -1206,18 +1213,7 @@ static std::vector<Place> greedy(
 }
 
 
-// ───────── CLI ─────────
-struct CLI{
-    double W = 0, H = 0;
-    int rot = DEFAULT_ROT_STEP;
-    int grid = 100;
-    std::string out = "layout.csv";
-    std::vector<std::string> files;
-    std::vector<int> nums;
-    int num = 1;
-    bool joinSegments = false;
-    int iter = 1; // number of random iterations
-};
+
 
 // Display usage information
 static void printHelp(const char* exe){
@@ -1229,7 +1225,11 @@ static void printHelp(const char* exe){
              << "  -j, --join-segments  Join broken segments into loops\n"
              << "  -i, --iter N      Number of random iterations (default 1)\n"
              << "  -g, --grid N      Grid step in mm (default 10)\n"
-             << "  -h, --help        Show this help message\n";
+             << "  -h, --help        Show this help message\n"
+             << "  --cand N          Candidate positions per part (default 1000)\n"
+            << "  --nfp N           NFPs per part (default 200)\n"
+            << "  --overlap N       Overlap checks per part (default 500)\n"
+            << "  --time N          Time limit per part in seconds (default 2.0)\n";
 }
 
 // Parse command line arguments
@@ -1253,6 +1253,18 @@ static CLI parse(int ac, char** av){
             c.out = av[++i];
         }else if(a=="-j"||a=="--join-segments"){
             c.joinSegments = true;
+        }else if(a=="--cand"){
+            if(i+1>=ac) throw std::runtime_error("missing value for --cand");
+            c.cand_limit = std::stoi(av[++i]);
+        }else if(a=="--nfp"){
+            if(i+1>=ac) throw std::runtime_error("missing value for --nfp");
+            c.nfp_limit = std::stoi(av[++i]);
+        }else if(a=="--overlap"){
+            if(i+1>=ac) throw std::runtime_error("missing value for --overlap");
+            c.overlap_limit = std::stoi(av[++i]);
+        }else if(a=="--time"){
+            if(i+1>=ac) throw std::runtime_error("missing value for --time");
+            c.time_limit = std::stod(av[++i]);
         }else if(a=="-i"||a=="--iter"){
             if(i+1>=ac) throw std::runtime_error("missing value for --iter");
             c.iter = std::stoi(av[++i]);
@@ -1410,8 +1422,7 @@ int main(int argc, char* argv[]) {
                 );
                 if (it == 0) my_seed = 0;
                 std::cerr << "[INFO] Итер " << it+1 << "/" << total_iter << "...\n";
-                auto layout = greedy(parts, all_orients, cli.W, cli.H, cli.grid, my_seed,
-                                    localNFP, sharedNFP, nfp_mutex);
+                auto layout = greedy(parts, all_orients, cli.W, cli.H, cli.grid, my_seed, localNFP, sharedNFP, nfp_mutex, &cli);
                 double area = computeArea(layout, parts);
 
                 {

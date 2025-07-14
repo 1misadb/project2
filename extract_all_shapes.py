@@ -19,7 +19,8 @@ def extract_all_details(dxf_file: str, tol: float = 0.1):
     # --- Группируем все полигоны в детали ---
     # Этот простой вариант: каждая LWPOLYLINE или POLYLINE считается отдельной деталью.
     # Для реальных DXF лучше доработать группировку!
-    details = []
+    # --- Собираем все замкнутые контуры ---
+    all_paths = []
     for e in msp:
         t = e.dxftype()
         path = []
@@ -49,8 +50,54 @@ def extract_all_details(dxf_file: str, tol: float = 0.1):
         if dist(path[0], path[-1]) <= tol:
             path[-1] = path[0]
 
-        # Можно доработать: искать отверстия, группировать по слоям и т.д.
-        details.append([path])  # Каждый path — отдельная деталь (outer + [holes])
+        # Только замкнутые контуры
+        if len(path) > 2 and dist(path[0], path[-1]) <= tol:
+            all_paths.append(path)
+
+    # --- Группируем по вложенности: внешний контур + отверстия ---
+    def point_in_polygon(pt, poly):
+        # Четное-нечетное правило
+        x, y = pt
+        inside = False
+        n = len(poly)
+        for i in range(n):
+            x0, y0 = poly[i]
+            x1, y1 = poly[(i+1)%n]
+            if ((y0 > y) != (y1 > y)):
+                xinters = (x1 - x0) * (y - y0) / (y1 - y0 + 1e-12) + x0
+                if x < xinters:
+                    inside = not inside
+        return inside
+
+    # Для каждого контура ищем, сколько других его содержат
+    parents = [None] * len(all_paths)
+    for i, path in enumerate(all_paths):
+        for j, other in enumerate(all_paths):
+            if i == j:
+                continue
+            # Проверяем, лежит ли точка path внутри other
+            if point_in_polygon(path[0], other):
+                # Если уже есть родитель, выбираем самый "маленький" (наиболее вложенный)
+                if parents[i] is None or len(other) < len(all_paths[parents[i]]):
+                    parents[i] = j
+
+    # Строим дерево: внешний контур (parent=None) + все вложенные в него (holes)
+    details = []
+    used = set()
+    for i, parent in enumerate(parents):
+        if parent is not None:
+            continue  # не внешний контур
+        # Собираем все, у кого parent == i (отверстия)
+        holes = [all_paths[j] for j, p in enumerate(parents) if p == i]
+        detail = [all_paths[i]] + holes
+        details.append(detail)
+        used.add(i)
+        used.update(j for j, p in enumerate(parents) if p == i)
+
+    # Если остались неиспользованные (например, вложенность >2), добавляем их как отдельные детали
+    for i in range(len(all_paths)):
+        if i not in used:
+            details.append([all_paths[i]])
 
     # --- Сдвигаем каждую деталь в (0,0) ---
     for detail_paths in details:
@@ -65,14 +112,25 @@ def extract_all_details(dxf_file: str, tol: float = 0.1):
 
 def main(argv=None):
     argv = argv or sys.argv[1:]
-    if len(argv) != 2:
-        print("Usage: python extract_multi_details.py <input.dxf> <output.json>")
+    if not (2 <= len(argv) <= 3):
+        print("Usage: python extract_multi_details.py <input.dxf> <output.json> [repeat=N]")
         return 1
-    in_dxf, out_json = argv
+    in_dxf, out_json = argv[:2]
+    repeat = 1
+    if len(argv) == 3:
+        arg = argv[2]
+        if arg.startswith("repeat="):
+            try:
+                repeat = int(arg.split("=", 1)[1])
+            except Exception:
+                print("Invalid repeat argument, must be repeat=N")
+                return 1
     details = extract_all_details(in_dxf, tol=0.01)
+    if repeat > 1:
+        details = details * repeat
     with open(out_json, "w") as f:
         json.dump(details, f, indent=0)
-    print(f"Saved {len(details)} details to {out_json}")
+    print(f"Saved {len(details)} details to {out_json} (repeat={repeat})")
 
 if __name__ == "__main__":
     sys.exit(main())

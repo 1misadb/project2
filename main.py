@@ -22,8 +22,9 @@ async def nest_file(file: UploadFile = File(...)):
             shutil.copyfileobj(file.file, buffer)
 
         # Запускаем Nesting CLI
+        nest_binary = "nest.exe" if os.name == "nt" else "./nest"
         result = subprocess.run(
-            ["C:/Users/User/nesting-cli-test/nesting-master/x64/Debug/Nesting.exe", input_path, output_path],
+            [nest_binary, input_path, output_path],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True

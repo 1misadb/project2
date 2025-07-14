@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <numeric>
 #include <cmath>
+#include <cctype>
 #include <map>
 #include <sstream>
 #include <iomanip>
@@ -897,6 +898,7 @@ static const Paths64& nfp(
     auto it = localNFP.find(k);
     if(it != localNFP.end()) return it->second;
 
+    // 1) Пробуем взять из глобального без блокировки
     {
         std::lock_guard<std::mutex> lock(gNfpMutex);
         auto git = gNfpCache.find(k);
@@ -906,6 +908,7 @@ static const Paths64& nfp(
         }
     }
 
+    // 2) Считаем NFP без блокировки
     Path64 a = SimplifyPath(A.poly[0], 0.05 * SCALE);
     Path64 b = SimplifyPath(B.poly[0], 0.05 * SCALE);
     if (std::abs(Area(a)) / (SCALE * SCALE) < 1.0) {
@@ -918,16 +921,20 @@ static const Paths64& nfp(
     }
     Paths64 res = MinkowskiSum(a, b, true);
 
+    // 3) Записываем результат под замком
     {
         std::lock_guard<std::mutex> lock(gNfpMutex);
-        gNfpCache[k] = res;
-        localNFP[k] = res;
+        gNfpCache.emplace(k, res);
     }
+    localNFP.emplace(k, res);
     return localNFP[k];
 }
 
 
-static std::vector<Point64> candidates(const std::vector<Paths64>& placed, const Paths64& current, int grid) {
+static std::vector<Point64> candidates(const std::vector<Paths64>& placed,
+                                       const Paths64& current,
+                                       int grid,
+                                       const Point64& sheetBR) {
     std::vector<Point64> out;
 
     for (const auto& shape : placed) {
@@ -940,8 +947,8 @@ static std::vector<Point64> candidates(const std::vector<Paths64>& placed, const
 
     // добавим сетку по всему листу
     int64_t step = static_cast<int64_t>(std::llround(grid * SCALE));
-    for (int64_t y = 0; y <= 1e6; y += step) {
-        for (int64_t x = 0; x <= 1e6; x += step) {
+    for (int64_t y = 0; y <= sheetBR.y; y += step) {
+        for (int64_t x = 0; x <= sheetBR.x; x += step) {
             out.push_back({x, y});
         }
     }
@@ -1005,7 +1012,7 @@ static std::vector<Place> greedy(
                 continue;
         std::vector<Point64> cand;  // просто объявление (БЕЗ = ...)
 
-        auto generated = candidates(placedShapes, op.poly, grid);
+        auto generated = candidates(placedShapes, op.poly, grid, sheetBR);
         cand.insert(cand.end(), generated.begin(), generated.end());
 
         for(const auto& po : placedOrient) {
@@ -1036,8 +1043,9 @@ static std::vector<Place> greedy(
         }), cand.end());
 
         // --- Ограничить число кандидатов
-        const size_t CAND_LIMIT = 2000;
-        if (cand.size() > CAND_LIMIT) cand.resize(CAND_LIMIT);
+        const size_t CAND_LIMIT = 200;
+        if (cand.size() > CAND_LIMIT)
+            cand.erase(cand.begin()+CAND_LIMIT, cand.end());
 
 
             double bestCost = 1e100;
@@ -1065,12 +1073,21 @@ static std::vector<Place> greedy(
                         std::cerr << "[CHECK] Aarea=" << areaA << " bb=" << rectToStr(bbPl)
                                   << " Barea=" << areaB << " bb=" << rectToStr(bbMoved) << "\n";
                     }
+                    // 💡 Пропускаем всё, что точно не пересекается по bbox
+                    if (bbPl.right < bbMoved.left || bbPl.left > bbMoved.right ||
+                        bbPl.top   < bbMoved.bottom || bbPl.bottom > bbMoved.top)
+                        continue;
+
+                    // Только теперь вызываем дорогой overlap()
                     bool ov = overlap(pl, moved);
+
+                    // [опционально] лог при "нелогичном" фолсе
                     if (ov && (bbPl.right < bbMoved.left || bbPl.left > bbMoved.right ||
-                               bbPl.top < bbMoved.bottom || bbPl.bottom > bbMoved.top)) {
+                            bbPl.top < bbMoved.bottom || bbPl.bottom > bbMoved.top)) {
                         std::lock_guard<std::mutex> lock(output_mutex);
-                        std::cerr << "[DEBUG] Overlap true but bbox separate ...";
+                        std::cerr << "[DEBUG] Overlap true but bbox says false!\n";
                     }
+
                     if (bbPl.right < bb.left || bbPl.left > bb.right ||
                         bbPl.top < bb.bottom || bbPl.bottom > bb.top)
                         continue;
@@ -1296,9 +1313,22 @@ int main(int argc, char* argv[]) {
                     parts.push_back(p);
                 }
         }
-        
+        std::vector<RawPart*> order;
+        order.reserve(parts.size());
+        for (auto& p : parts) order.push_back(&p);
+        auto h = [](const RawPart& q){
+            auto bb = getBBox(q.rings[0]);
+            return bb.top - bb.bottom; // int64
+        };
+        std::sort(order.begin(), order.end(),
+                [&](RawPart* a, RawPart* b){ return h(*a) > h(*b); });
         // ВАЖНО: вычисляем повороты только один раз!
         auto all_orients = makeOrient(parts, cli.rot);
+        order.reserve(parts.size());
+        for (auto& p : parts) order.push_back(&p);
+        std::sort(order.begin(), order.end(), [](RawPart* a, RawPart* b){
+            return getBBox(a->rings[0]).Height() > getBBox(b->rings[0]).Height();
+        });
         for (size_t i = 0; i < parts.size(); ++i) {
             auto& p = parts[i];
             if (p.rings.empty()) {

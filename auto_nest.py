@@ -51,15 +51,19 @@ if __name__ == "__main__":
         print(f"[PY] DXF → JSON: {dxf} -> {json_out}")
 
         # ✅ Путь к твоему Python39
-        python39_path = r"C:\Users\User\AppData\Local\Programs\Python\Python39\python.exe"
+        python_exec = r"C:\Users\User\AppData\Local\Programs\Python\Python39\python.exe"
 
         # ✅ Вызов конвертера
-        subprocess.check_call([python39_path, "extract_all_shapes.py", dxf, json_out])
-
+        try:
+            subprocess.check_call([python_exec, "extract_all_shapes.py", dxf, json_out])
+        except subprocess.CalledProcessError as e:
+            print(f"[ERROR] Failed to convert {dxf}: {e}")
+            sys.exit(1)
         json_files.append(json_out)
 
     # Формируем команду nest.exe
-    nest_cmd = ["nest.exe", "-s", sheet]
+    nest_binary = "nest.exe" if os.name == "nt" else "./nest"
+    nest_cmd = [nest_binary, "-s", sheet]
 
     if iterations is not None:
         nest_cmd += ["-i", iterations]

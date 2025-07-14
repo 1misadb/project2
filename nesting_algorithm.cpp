@@ -156,6 +156,35 @@ static double pathLength(const Path64& p)
 static Paths64 unionAll(const Paths64& in){
     return Union(in, FillRule::NonZero);
 }
+static std::string rectToStr(const Rect64& r)
+{
+    std::ostringstream ss;
+    ss << "(" << Dbl(r.left) << "," << Dbl(r.bottom) << ")-("
+       << Dbl(r.right) << "," << Dbl(r.top) << ")";
+    return ss.str();
+}
+
+static std::string debugPaths64(const Paths64& p)
+{
+    std::ostringstream ss;
+    ss << "{";
+    for(size_t i=0;i<p.size();++i){
+        if(i) ss << ",";
+        ss << "[";
+        for(size_t j=0;j<p[i].size();++j){
+            if(j) ss << ",";
+            ss << "(" << p[i][j].x << "," << p[i][j].y << ")";
+        }
+        ss << "]";
+    }
+    ss << "}";
+    return ss.str();
+}
+
+static inline double areaMM2(const Paths64& p)
+{
+    return std::abs(Area(p)) / (SCALE * SCALE);
+}
 
 // Test for polygon overlap
 
@@ -965,9 +994,13 @@ static std::vector<Place> greedy(
             continue;
         }
         bool ok = false; Place best{}; Orient bestO{};
-        const auto& oriSet = all_orients[ ord[i].id ];  
+        const auto& oriSet = all_orients[ ord[i].id ];
+        size_t invalidBB_total = 0;
+        bool firstTooBig = (i == 0);
 
         for (const auto& op : oriSet) {
+            if (op.bb.right <= sheetBR.x && op.bb.top <= sheetBR.y)
+                if(i==0) firstTooBig = false;
             if (op.bb.right > sheetBR.x || op.bb.top > sheetBR.y)
                 continue;
         std::vector<Point64> cand;  // просто объявление (БЕЗ = ...)
@@ -1015,17 +1048,33 @@ static std::vector<Place> greedy(
             for (size_t idx = 0; idx < cand.size(); ++idx) {
                 const auto& c = cand[idx];
                 Rect64 bb = op.bb; bb.left += c.x; bb.right += c.x; bb.bottom += c.y; bb.top += c.y;
-                if (bb.left < 0 || bb.bottom < 0 || bb.right > sheetBR.x || bb.top > sheetBR.y)
+                if (bb.left < 0 || bb.bottom < 0 || bb.right > sheetBR.x || bb.top > sheetBR.y){
+                    ++invalidBB_total;
                     continue;
+                }
                 Paths64 moved = movePaths(op.poly, c.x, c.y);
                 bool clash = false;
                 for (size_t pi = 0; pi < placedShapes.size(); ++pi) {
                     const auto& pl = placedShapes[pi];
                     Rect64 bbPl = getBBox(pl);
+                    Rect64 bbMoved = getBBox(moved);
+                    double areaA = areaMM2(pl);
+                    double areaB = areaMM2(moved);
+                    {
+                        std::lock_guard<std::mutex> lock(output_mutex);
+                        std::cerr << "[CHECK] Aarea=" << areaA << " bb=" << rectToStr(bbPl)
+                                  << " Barea=" << areaB << " bb=" << rectToStr(bbMoved) << "\n";
+                    }
+                    bool ov = overlap(pl, moved);
+                    if (ov && (bbPl.right < bbMoved.left || bbPl.left > bbMoved.right ||
+                               bbPl.top < bbMoved.bottom || bbPl.bottom > bbMoved.top)) {
+                        std::lock_guard<std::mutex> lock(output_mutex);
+                        std::cerr << "[DEBUG] Overlap true but bbox separate ...";
+                    }
                     if (bbPl.right < bb.left || bbPl.left > bb.right ||
                         bbPl.top < bb.bottom || bbPl.bottom > bb.top)
                         continue;
-                    if (overlap(pl, moved)) {
+                    if (ov) {
                         {
                             std::lock_guard<std::mutex> lock(output_mutex);
                             std::cerr << "[OVERLAP] new part " << ord[i].id
@@ -1040,7 +1089,7 @@ static std::vector<Place> greedy(
                 }
                 if (clash) continue;
                 ++valid;
-                if (valid <= 3 || valid == 100 || valid == 500 || valid == 1000) {
+                if (valid <= 10 || valid == 100 || valid == 500 || valid == 1000) {
                     std::lock_guard<std::mutex> lock(output_mutex);
                     std::cerr << "  [CAND] #" << idx << ": x=" << Dbl(c.x)
                             << " y=" << Dbl(c.y)
@@ -1064,10 +1113,27 @@ static std::vector<Place> greedy(
                 placedShapes.push_back(std::move(moved));
                 placedOrient.push_back(bestO);
                 layout.push_back(bestPl);
+                if(i==0){
+                    Rect64 fb = bestO.bb;
+                    fb.left   += I64mm(bestPl.x);
+                    fb.right  += I64mm(bestPl.x);
+                    fb.bottom += I64mm(bestPl.y);
+                    fb.top    += I64mm(bestPl.y);
+                    std::lock_guard<std::mutex> lock(output_mutex);
+                    std::cerr << "[FIRST] bbox=" << rectToStr(fb)
+                              << " pos=(" << bestPl.x << "," << bestPl.y << ")\n";
+                }
                 ok = true;
                 break;
             }
             
+        }
+        {
+            std::lock_guard<std::mutex> lock(output_mutex);
+            std::cerr << "[INFO] Невалидных кандидатов по bbox для детали " << i
+                      << ": " << invalidBB_total << "\n";
+            if(i==0 && firstTooBig)
+                std::cerr << "Первый part слишком велик\n";
         }
             if (!ok) {
                 std::cerr << "[WARN] Part " << i << " не удалось разместить – пропускаю\n";

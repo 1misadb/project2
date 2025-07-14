@@ -935,6 +935,7 @@ static std::vector<Point64> candidates(const std::vector<Paths64>& placed,
                                        const Paths64& current,
                                        int grid,
                                        const Point64& sheetBR) {
+    constexpr size_t MAX_GRID_PTS = 10000;
     std::vector<Point64> out;
 
     for (const auto& shape : placed) {
@@ -945,14 +946,18 @@ static std::vector<Point64> candidates(const std::vector<Paths64>& placed,
         out.push_back({bb.right, bb.top});
     }
 
-    // добавим сетку по всему листу
+
     int64_t step = static_cast<int64_t>(std::llround(grid * SCALE));
-    for (int64_t y = 0; y <= sheetBR.y; y += step) {
-        for (int64_t x = 0; x <= sheetBR.x; x += step) {
+    if (step <= 0) step = SCALE; // safety
+    for (int64_t y = 0; y <= sheetBR.y && out.size() < MAX_GRID_PTS; y += step) {
+        for (int64_t x = 0; x <= sheetBR.x && out.size() < MAX_GRID_PTS; x += step) {
             out.push_back({x, y});
         }
     }
-
+    if (out.size() >= MAX_GRID_PTS) {
+        std::lock_guard<std::mutex> lock(output_mutex);
+        std::cerr << "[WARN] grid candidate limit reached" << std::endl;
+    }
     return out;
 }
 // ───────── greedy placer ─────────
@@ -971,6 +976,11 @@ static double computeArea(const std::vector<Place>& layout, const std::vector<Ra
     Rect64 bb = getBBox(all);
     return Dbl(bb.right - bb.left) * Dbl(bb.top - bb.bottom);
 }
+const int MAX_OVERLAP_CHECKS = 200;           // Максимум overlap-проверок на одну деталь
+const double MAX_TIME_PER_PART = 2.0;         // Секунд на одну деталь
+
+auto part_start = std::chrono::steady_clock::now();
+int overlap_checks = 0;
 // Функция раскладки для одной случайной перестановки (ОДНА итерация!)
 static std::vector<Place> greedy(
     const std::vector<RawPart>& parts,
@@ -1010,128 +1020,164 @@ static std::vector<Place> greedy(
                 if(i==0) firstTooBig = false;
             if (op.bb.right > sheetBR.x || op.bb.top > sheetBR.y)
                 continue;
-        std::vector<Point64> cand;  // просто объявление (БЕЗ = ...)
 
-        auto generated = candidates(placedShapes, op.poly, grid, sheetBR);
-        cand.insert(cand.end(), generated.begin(), generated.end());
+            // ----------- Новый сбор кандидатов! -----------
+            const size_t CAND_LIMIT = 1000;   // сколько максимум рассматривать кандидатов
+            const size_t NFP_LIMIT = 200;     // сколько максимум взять точек NFP для одного ориента
 
-        for(const auto& po : placedOrient) {
-            const Paths64& nfpp = nfp(po, op, localNFP, sharedNFP, nfp_mutex);
-            for(const auto& pth : nfpp)
-                for(const auto& pt : pth)
-                    cand.push_back(pt);
-        }
-        cand.push_back({0,0});
-        for(const auto& ps : placedShapes){
-            Rect64 bb = getBBox(ps);
-            cand.push_back({bb.left, bb.bottom});
-            cand.push_back({bb.right, bb.bottom});
-            cand.push_back({bb.left, bb.top});
-            cand.push_back({bb.right, bb.top});
-        }
-        int64_t step_i = mm2i(grid);
-        for(int64_t y=0; y<=sheetBR.y; y+=step_i)
-            for(int64_t x=0; x<=sheetBR.x; x+=step_i)
-                cand.push_back({x,y});
+            std::vector<Point64> cand;
+            cand.reserve(CAND_LIMIT);
 
-        // --- Удалить дубликаты
-        std::sort(cand.begin(), cand.end(), [](const Point64& a, const Point64& b) {
-            return a.y == b.y ? a.x < b.x : a.y < b.y;
-        });
-        cand.erase(std::unique(cand.begin(), cand.end(), [](const Point64& a, const Point64& b) {
-            return a.x == b.x && a.y == b.y;
-        }), cand.end());
+            // 1. (0,0) — всегда
+            cand.push_back({0,0});
 
-        // --- Ограничить число кандидатов
-        const size_t CAND_LIMIT = 200;
-        if (cand.size() > CAND_LIMIT)
-            cand.erase(cand.begin()+CAND_LIMIT, cand.end());
+            // 2. bbox corners уже размещённых деталей
+            for(const auto& ps : placedShapes){
+                if (cand.size() >= CAND_LIMIT) break;
+                Rect64 bb = getBBox(ps);
+                cand.push_back({bb.left, bb.bottom});
+                if (cand.size() >= CAND_LIMIT) break;
+                cand.push_back({bb.right, bb.bottom});
+                if (cand.size() >= CAND_LIMIT) break;
+                cand.push_back({bb.left, bb.top});
+                if (cand.size() >= CAND_LIMIT) break;
+                cand.push_back({bb.right, bb.top});
+            }
 
+            // 3. сетка по листу
+            int64_t step = mm2i(grid);
+            for(int64_t y=0; y<=sheetBR.y && cand.size()<CAND_LIMIT; y+=step) {
+                for(int64_t x=0; x<=sheetBR.x && cand.size()<CAND_LIMIT; x+=step) {
+                    cand.push_back({x,y});
+                }
+            }
+
+            // 4. NFP кандидаты
+            size_t nfp_count = 0;
+            for(const auto& po : placedOrient) {
+                if (cand.size() >= CAND_LIMIT) break;
+                const Paths64& nfpp = nfp(po, op, localNFP, sharedNFP, nfp_mutex);
+                for(const auto& pth : nfpp) {
+                    for(const auto& pt : pth) {
+                        if (cand.size() >= CAND_LIMIT || nfp_count >= NFP_LIMIT) break;
+                        cand.push_back(pt);
+                        nfp_count++;
+                    }
+                    if (cand.size() >= CAND_LIMIT || nfp_count >= NFP_LIMIT) break;
+                }
+                if (cand.size() >= CAND_LIMIT) break;
+            }
+
+            // --- Удалить дубликаты ---
+            if (cand.size() > 1) {
+                std::sort(cand.begin(), cand.end(), [](const Point64& a, const Point64& b) {
+                    return a.y == b.y ? a.x < b.x : a.y < b.y;
+                });
+                cand.erase(std::unique(cand.begin(), cand.end(), [](const Point64& a, const Point64& b) {
+                    return a.x == b.x && a.y == b.y;
+                }), cand.end());
+            }
+            if (cand.size() > CAND_LIMIT)
+                cand.resize(CAND_LIMIT);
+            // ----------- Конец сбора кандидатов -----------
 
             double bestCost = 1e100;
             Place  bestPl{};    // лучший кандидат (id, x, y, ang)
-            Orient bestO{};     // лучший поворот
+            Orient bestOrient{};     // лучший поворот
             size_t bestIdx = -1;
             size_t valid = 0;
             for (size_t idx = 0; idx < cand.size(); ++idx) {
-                const auto& c = cand[idx];
-                Rect64 bb = op.bb; bb.left += c.x; bb.right += c.x; bb.bottom += c.y; bb.top += c.y;
-                if (bb.left < 0 || bb.bottom < 0 || bb.right > sheetBR.x || bb.top > sheetBR.y){
-                    ++invalidBB_total;
-                    continue;
+            // --- Лимиты времени и проверок ---
+            if (overlap_checks >= MAX_OVERLAP_CHECKS) {
+                std::cerr << "[LIMIT] Превышено число overlap-проверок для детали " << i << " — пропускаю\n";
+                break;
+            }
+            auto now = std::chrono::steady_clock::now();
+            double elapsed = std::chrono::duration<double>(now - part_start).count();
+            if (elapsed > MAX_TIME_PER_PART) {
+                std::cerr << "[TIMEOUT] Время размещения детали " << i << " превысило лимит (" << elapsed << " сек) — пропускаю\n";
+                break;
+            }
+
+            const auto& c = cand[idx];
+            Rect64 bb = op.bb; bb.left += c.x; bb.right += c.x; bb.bottom += c.y; bb.top += c.y;
+            if (bb.left < 0 || bb.bottom < 0 || bb.right > sheetBR.x || bb.top > sheetBR.y){
+                ++invalidBB_total;
+                continue;
+            }
+            Paths64 moved = movePaths(op.poly, c.x, c.y);
+            bool clash = false;
+            for (size_t pi = 0; pi < placedShapes.size(); ++pi) {
+                const auto& pl = placedShapes[pi];
+                Rect64 bbPl = getBBox(pl);
+                Rect64 bbMoved = getBBox(moved);
+                double areaA = areaMM2(pl);
+                double areaB = areaMM2(moved);
+                if (idx < 20 || idx % 1000 == 0) {
+                    std::lock_guard<std::mutex> lock(output_mutex);
+                    std::cerr << "[CHECK] Aarea=" << areaA << " bb=" << rectToStr(bbPl)
+                            << " Barea=" << areaB << " bb=" << rectToStr(bbMoved) << "\n";
                 }
-                Paths64 moved = movePaths(op.poly, c.x, c.y);
-                bool clash = false;
-                for (size_t pi = 0; pi < placedShapes.size(); ++pi) {
-                    const auto& pl = placedShapes[pi];
-                    Rect64 bbPl = getBBox(pl);
-                    Rect64 bbMoved = getBBox(moved);
-                    double areaA = areaMM2(pl);
-                    double areaB = areaMM2(moved);
+                // 💡 Пропускаем всё, что точно не пересекается по bbox
+                if (bbPl.right < bbMoved.left || bbPl.left > bbMoved.right ||
+                    bbPl.top   < bbMoved.bottom || bbPl.bottom > bbMoved.top)
+                    continue;
+
+                // Только теперь вызываем дорогой overlap()
+                overlap_checks++; // <--- увеличиваем здесь
+                bool ov = overlap(pl, moved);
+
+                // [опционально] лог при "нелогичном" фолсе
+                if (ov && (bbPl.right < bbMoved.left || bbPl.left > bbMoved.right ||
+                        bbPl.top < bbMoved.bottom || bbPl.bottom > bbMoved.top)) {
+                    std::lock_guard<std::mutex> lock(output_mutex);
+                    std::cerr << "[DEBUG] Overlap true but bbox says false!\n";
+                }
+
+                if (bbPl.right < bb.left || bbPl.left > bb.right ||
+                    bbPl.top < bb.bottom || bbPl.bottom > bb.top)
+                    continue;
+                if (ov) {
                     {
                         std::lock_guard<std::mutex> lock(output_mutex);
-                        std::cerr << "[CHECK] Aarea=" << areaA << " bb=" << rectToStr(bbPl)
-                                  << " Barea=" << areaB << " bb=" << rectToStr(bbMoved) << "\n";
+                        std::cerr << "[OVERLAP] new part " << ord[i].id
+                                << " at (" << Dbl(c.x) << "," << Dbl(c.y)
+                                << ") ang=" << op.ang
+                                << " intersects placed part "
+                                << placedOrient[pi].id << "\n";
                     }
-                    // 💡 Пропускаем всё, что точно не пересекается по bbox
-                    if (bbPl.right < bbMoved.left || bbPl.left > bbMoved.right ||
-                        bbPl.top   < bbMoved.bottom || bbPl.bottom > bbMoved.top)
-                        continue;
-
-                    // Только теперь вызываем дорогой overlap()
-                    bool ov = overlap(pl, moved);
-
-                    // [опционально] лог при "нелогичном" фолсе
-                    if (ov && (bbPl.right < bbMoved.left || bbPl.left > bbMoved.right ||
-                            bbPl.top < bbMoved.bottom || bbPl.bottom > bbMoved.top)) {
-                        std::lock_guard<std::mutex> lock(output_mutex);
-                        std::cerr << "[DEBUG] Overlap true but bbox says false!\n";
-                    }
-
-                    if (bbPl.right < bb.left || bbPl.left > bb.right ||
-                        bbPl.top < bb.bottom || bbPl.bottom > bb.top)
-                        continue;
-                    if (ov) {
-                        {
-                            std::lock_guard<std::mutex> lock(output_mutex);
-                            std::cerr << "[OVERLAP] new part " << ord[i].id
-                                    << " at (" << Dbl(c.x) << "," << Dbl(c.y)
-                                    << ") ang=" << op.ang
-                                    << " intersects placed part "
-                                    << placedOrient[pi].id << "\n";
-                        }
-                        clash = true;
-                        break;
-                    }
-                }
-                if (clash) continue;
-                ++valid;
-                if (valid <= 10 || valid == 100 || valid == 500 || valid == 1000) {
-                    std::lock_guard<std::mutex> lock(output_mutex);
-                    std::cerr << "  [CAND] #" << idx << ": x=" << Dbl(c.x)
-                            << " y=" << Dbl(c.y)
-                            << " (valid=" << valid << ")\n";
-                }
-
-                // --- Вот здесь критерий: например, минимальный верхний Y (минимальная высота слоя)
-                double cost = Dbl(bb.top);
-                if (cost < bestCost) {
-                    bestCost = cost;
-                    bestPl   = { op.id, Dbl(c.x), Dbl(c.y), op.ang };
-                    bestO    = op;
-                    bestIdx  = idx;
+                    clash = true;
+                    break;
                 }
             }
+            if (clash) continue;
+            ++valid;
+            if (valid <= 10 || valid == 100 || valid == 500 || valid == 1000) {
+                std::lock_guard<std::mutex> lock(output_mutex);
+                std::cerr << "  [CAND] #" << idx << ": x=" << Dbl(c.x)
+                        << " y=" << Dbl(c.y)
+                        << " (valid=" << valid << ")\n";
+            }
+
+            // --- Вот здесь критерий: например, минимальный верхний Y (минимальная высота слоя)
+            double cost = Dbl(bb.top);
+            if (cost < bestCost) {
+                bestCost   = cost;
+                bestPl     = { op.id, Dbl(c.x), Dbl(c.y), op.ang };
+                bestOrient = op;
+                bestIdx    = idx;
+            }
+        }
             std::cerr << "[STEP] Всего валидных кандидатов: " << valid << '\n';
             // --- если нашёлся хоть один валидный кандидат — добавляем только его
             if (bestCost < 1e100) {
                 auto& c = cand[bestIdx];
                 Paths64 moved = movePaths(op.poly, I64mm(bestPl.x), I64mm(bestPl.y));
                 placedShapes.push_back(std::move(moved));
-                placedOrient.push_back(bestO);
+                placedOrient.push_back(bestOrient);
                 layout.push_back(bestPl);
                 if(i==0){
-                    Rect64 fb = bestO.bb;
+                    Rect64 fb = bestOrient.bb;
                     fb.left   += I64mm(bestPl.x);
                     fb.right  += I64mm(bestPl.x);
                     fb.bottom += I64mm(bestPl.y);
@@ -1143,7 +1189,7 @@ static std::vector<Place> greedy(
                 ok = true;
                 break;
             }
-            
+
         }
         {
             std::lock_guard<std::mutex> lock(output_mutex);
@@ -1152,12 +1198,13 @@ static std::vector<Place> greedy(
             if(i==0 && firstTooBig)
                 std::cerr << "Первый part слишком велик\n";
         }
-            if (!ok) {
-                std::cerr << "[WARN] Part " << i << " не удалось разместить – пропускаю\n";
-            }
+        if (!ok) {
+            std::cerr << "[WARN] Part " << i << " не удалось разместить – пропускаю\n";
+        }
     }
     return layout;
 }
+
 
 // ───────── CLI ─────────
 struct CLI{
@@ -1200,6 +1247,7 @@ static CLI parse(int ac, char** av){
         }else if(a=="-r"||a=="--rot"){
             if(i+1>=ac) throw std::runtime_error("missing value for --rot");
             c.rot = std::stoi(av[++i]);
+            if(c.rot <= 0 || c.rot > 360) throw std::runtime_error("--rot must be in 1..360");
         }else if(a=="-o"||a=="--out"){
             if(i+1>=ac) throw std::runtime_error("missing value for --out");
             c.out = av[++i];
@@ -1213,6 +1261,10 @@ static CLI parse(int ac, char** av){
             c.grid = std::stoi(av[++i]);
             if(c.grid <= 0) throw std::runtime_error("--grid must be > 0");
         }else if(a=="-n"||a=="--num"){
+            if(c.grid < 1){
+                std::cerr << "[WARN] grid too small, clamped to 1mm" << std::endl;
+                c.grid = 1;
+            }
             while (i+1<ac && std::isdigit(av[i+1][0]))
             {
                 c.nums.push_back(std::stoi(av[++i]));

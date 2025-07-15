@@ -16,43 +16,85 @@ def extract_all_details(dxf_file: str, tol: float = 0.1):
         factor = 1.0
 
     msp = doc.modelspace()
-    # --- Группируем все полигоны в детали ---
-    # Этот простой вариант: каждая LWPOLYLINE или POLYLINE считается отдельной деталью.
-    # Для реальных DXF лучше доработать группировку!
-    # --- Собираем все замкнутые контуры ---
-    all_paths = []
+    # --- Собираем все примитивы как отдельные сегменты ---
+    segments = []
     for e in msp:
         t = e.dxftype()
-        path = []
         if t == "LINE":
             p1 = e.dxf.start
             p2 = e.dxf.end
-            path = [[p1.x * factor, p1.y * factor], [p2.x * factor, p2.y * factor]]
+            segments.append([[p1.x * factor, p1.y * factor], [p2.x * factor, p2.y * factor]])
         elif t == "LWPOLYLINE":
-            for x, y in e.get_points("xy"):
-                path.append([x * factor, y * factor])
+            pts = [[x * factor, y * factor] for x, y in e.get_points("xy")]
+            if len(pts) > 1:
+                closed = dist(pts[0], pts[-1]) <= tol or getattr(e, 'closed', False)
+                for i in range(len(pts) - 1):
+                    segments.append([pts[i], pts[i+1]])
+                if closed:
+                    segments.append([pts[-1], pts[0]])
         elif t == "POLYLINE":
-            for v in e.vertices:
-                x, y = v.dxf.location.x, v.dxf.location.y
-                path.append([x * factor, y * factor])
+            pts = [[v.dxf.location.x * factor, v.dxf.location.y * factor] for v in e.vertices]
+            if len(pts) > 1:
+                closed = dist(pts[0], pts[-1]) <= tol or getattr(e, 'is_closed', False)
+                for i in range(len(pts) - 1):
+                    segments.append([pts[i], pts[i+1]])
+                if closed:
+                    segments.append([pts[-1], pts[0]])
         elif t == "SPLINE":
-            for v in e.flattening(tol * 0.1 / factor):
-                path.append([v.x * factor, v.y * factor])
+            pts = [[v.x * factor, v.y * factor] for v in e.flattening(tol * 0.1 / factor)]
+            for i in range(len(pts) - 1):
+                segments.append([pts[i], pts[i+1]])
         elif t in ("ARC", "CIRCLE"):
-            for v in e.flattening(tol * 0.1 / factor):
-                path.append([v.x * factor, v.y * factor])
-        else:
-            continue
+            pts = [[v.x * factor, v.y * factor] for v in e.flattening(tol * 0.1 / factor)]
+            for i in range(len(pts) - 1):
+                segments.append([pts[i], pts[i+1]])
 
-        if not path:
-            continue
+    # --- Автоматическое объединение сегментов в замкнутые контуры ---
+    def join_segments(segments, tol=0.1):
+        paths = []
+        used = [False] * len(segments)
+        for i, seg in enumerate(segments):
+            if used[i]:
+                continue
+            path = seg[:]
+            used[i] = True
+            changed = True
+            while changed:
+                changed = False
+                for j, seg2 in enumerate(segments):
+                    if used[j]:
+                        continue
+                    # Совпадает конец path и начало seg2
+                    if dist(path[-1], seg2[0]) <= tol:
+                        path.extend(seg2[1:])
+                        used[j] = True
+                        changed = True
+                        break
+                    # Совпадает конец path и конец seg2
+                    if dist(path[-1], seg2[-1]) <= tol:
+                        path.extend(reversed(seg2[:-1]))
+                        used[j] = True
+                        changed = True
+                        break
+                    # Совпадает начало path и конец seg2
+                    if dist(path[0], seg2[-1]) <= tol:
+                        path = seg2[:-1] + path
+                        used[j] = True
+                        changed = True
+                        break
+                    # Совпадает начало path и начало seg2
+                    if dist(path[0], seg2[0]) <= tol:
+                        path = list(reversed(seg2[1:])) + path
+                        used[j] = True
+                        changed = True
+                        break
+            # Если замкнуто
+            if len(path) > 2 and dist(path[0], path[-1]) <= tol:
+                path[-1] = path[0]
+                paths.append(path)
+        return paths
 
-        if dist(path[0], path[-1]) <= tol:
-            path[-1] = path[0]
-
-        # Только замкнутые контуры
-        if len(path) > 2 and dist(path[0], path[-1]) <= tol:
-            all_paths.append(path)
+    all_paths = join_segments(segments, tol)
 
     # --- Группируем по вложенности: внешний контур + отверстия ---
     def point_in_polygon(pt, poly):
@@ -125,7 +167,7 @@ def main(argv=None):
             except Exception:
                 print("Invalid repeat argument, must be repeat=N")
                 return 1
-    details = extract_all_details(in_dxf, tol=0.01)
+    details = extract_all_details(in_dxf, tol=0.05)
     if repeat > 1:
         details = details * repeat
     with open(out_json, "w") as f:

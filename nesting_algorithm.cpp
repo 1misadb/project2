@@ -32,6 +32,7 @@
 #include <chrono>
 #include <atomic>
 #include <thread>
+#include <set>
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -103,19 +104,19 @@ constexpr double TOL_MM = 1.0;
 struct CLI{
     double W = 0, H = 0;
     int rot = DEFAULT_ROT_STEP;
-    int grid = 0.1;
+    double grid = 0.01;
     std::string out = "layout.csv";
     std::vector<std::string> files;
     std::vector<int> nums;
     int num = 1;
     bool joinSegments = false;
-    int iter = 1; 
+    int iter = 5; 
     int cand_limit = 100000;
     int nfp_limit = 20000;
     int overlap_limit = 20000;
     double time_limit = 3000.0;
 };         
- // base tolerance in mm
+// base tolerance in mm
 inline int64_t tol_mm() { return llround(TOL_MM * SCALE); }
 // Преобразование double → int64 с учетом SCALE
 inline int64_t I64(double v) {          // из мм → int64
@@ -959,7 +960,7 @@ static std::vector<Point64> candidates(const std::vector<Paths64>& placed,
                                        const Paths64& current,
                                        int grid,
                                        const Point64& sheetBR) {
-    constexpr size_t MAX_GRID_PTS = 10000;
+    constexpr size_t MAX_GRID_PTS = 100000;
     std::vector<Point64> out;
 
     for (const auto& shape : placed) {
@@ -1040,6 +1041,8 @@ static std::vector<Place> greedy(
     std::vector<Place> layout;
 
     for (size_t i = 0; i < ord.size(); ++i) {
+        overlap_checks = 0;                      // ① обнулить перед деталью
+        auto part_start = std::chrono::steady_clock::now();   // ② время – локально
         std::cerr << "[STEP] Размещаю деталь " << i << " (ID " << ord[i].id << ") ...\n";
         if (ord[i].rings.empty()) {
             std::cerr << "[ERROR] Деталь " << i << " пуста! Пропускаю.\n";
@@ -1071,8 +1074,8 @@ static std::vector<Place> greedy(
                 if (op.bb.right > sheetBR.x || op.bb.top > sheetBR.y)
                     continue;
 
-                const size_t CAND_LIMIT = 100;   // Было 1000
-                const size_t NFP_LIMIT = 20;     // Было 200
+                const size_t CAND_LIMIT = 100000;   // Было 10000, увеличено для большего перебора
+                const size_t NFP_LIMIT = 20000;     // Было 2000, увеличено для большего перебора
                 std::vector<Point64> cand;
                 cand.reserve(CAND_LIMIT);
                 cand.push_back({0,0});
@@ -1107,6 +1110,7 @@ static std::vector<Place> greedy(
                     }
                     if (cand.size() >= CAND_LIMIT) break;
                 }
+                // --- сортировка кандидатов по (y, x) для "лево-низ" ---
                 if (cand.size() > 1) {
                     std::sort(cand.begin(), cand.end(), [](const Point64& a, const Point64& b) {
                         return a.y == b.y ? a.x < b.x : a.y < b.y;
@@ -1121,6 +1125,7 @@ static std::vector<Place> greedy(
                 size_t valid = 0;
                 for (size_t idx = 0; idx < cand.size(); ++idx) {
                     if (overlap_checks >= MAX_OVERLAP_CHECKS) break;
+                    // исправлено: объявить now здесь
                     auto now = std::chrono::steady_clock::now();
                     double elapsed = std::chrono::duration<double>(now - part_start).count();
                     if (elapsed > MAX_TIME_PER_PART) break;
@@ -1152,7 +1157,9 @@ static std::vector<Place> greedy(
                     if (clash) continue;
                     ++valid;
                     double cost = Dbl(bb.top);
-                    if (cost < localBestCost) {
+                    // --- Улучшение: если cost одинаковый, выбирать левее ---
+                    if (cost < localBestCost ||
+                        (std::abs(cost - localBestCost) < 1e-6 && c.x < localBestPl.x)) {
                         localBestCost   = cost;
                         localBestPl     = { op.id, Dbl(c.x), Dbl(c.y), op.ang };
                         localBestOrient = op;
@@ -1163,7 +1170,8 @@ static std::vector<Place> greedy(
             // --- Критическая секция для выбора глобального лучшего ---
 #pragma omp critical
             {
-                if (localBestCost < bestCost) {
+                if (localBestCost < bestCost ||
+                    (std::abs(localBestCost - bestCost) < 1e-6 && localBestPl.x < bestPl.x)) {
                     bestCost = localBestCost;
                     bestPl = localBestPl;
                     bestOrient = localBestOrient;
@@ -1270,7 +1278,7 @@ static CLI parse(int ac, char** av){
             c.iter = std::stoi(av[++i]);
         }else if(a=="-g"||a=="--grid"){
             if(i+1>=ac) throw std::runtime_error("missing value for --grid");
-            c.grid = std::stoi(av[++i]);
+            c.grid = std::stod(av[++i]);
             if(c.grid <= 0) throw std::runtime_error("--grid must be > 0");
         }else if(a=="-n"||a=="--num"){
             if(c.grid < 1){
@@ -1361,117 +1369,253 @@ void ExportPlacedToDXF(const std::string& filename,
     f << "0\nENDSEC\n0\nEOF\n";
 }
 
-// ───────── main ─────────
-int main(int argc, char* argv[]) {
+// --- Genetic Algorithm Structures ---
+struct Genome {
+    std::vector<int> order;      // порядок деталей
+    std::vector<int> angles;     // ориентация (индекс в all_orients) для каждой детали
+    double fitness = 1e100;      // площадь bounding box
+    std::vector<Place> layout;   // результат greedy
+};
+
+// --- Генерация случайной особи ---
+Genome random_genome(size_t n, size_t n_orients, std::mt19937& rng) {
+    Genome g;
+    g.order.resize(n);
+    std::iota(g.order.begin(), g.order.end(), 0);
+    std::shuffle(g.order.begin(), g.order.end(), rng);
+    g.angles.resize(n);
+    for (size_t i = 0; i < n; ++i)
+        g.angles[i] = rng() % n_orients;
+    return g;
+}
+
+// --- Кроссовер (однородный) ---
+Genome crossover(const Genome& a, const Genome& b, std::mt19937& rng) {
+    size_t n = a.order.size();
+    Genome child;
+    child.order = a.order;
+    // PMX crossover для порядка
+    std::uniform_int_distribution<size_t> dist(0, n-1);
+    size_t l = dist(rng), r = dist(rng);
+    if (l > r) std::swap(l, r);
+    std::set<int> taken;
+    for (size_t i = l; i <= r; ++i) {
+        child.order[i] = b.order[i];
+        taken.insert(b.order[i]);
+    }
+    size_t ai = 0;
+    for (size_t i = 0; i < n; ++i) {
+        if (i >= l && i <= r) continue;
+        while (taken.count(a.order[ai])) ++ai;
+        child.order[i] = a.order[ai++];
+    }
+    // Ориентации — случайно от одного из родителей
+    child.angles.resize(n);
+    for (size_t i = 0; i < n; ++i)
+        child.angles[i] = (rng() & 1) ? a.angles[i] : b.angles[i];
+    return child;
+}
+
+// --- Мутация ---
+void mutate(Genome& g, size_t n_orients, std::mt19937& rng, double rate=0.1) {
+    std::uniform_real_distribution<double> prob(0.0, 1.0);
+    if (prob(rng) < rate) {
+        // swap two parts
+        size_t i = rng() % g.order.size(), j = rng() % g.order.size();
+        std::swap(g.order[i], g.order[j]);
+    }
+    for (size_t i = 0; i < g.angles.size(); ++i)
+        if (prob(rng) < rate)
+            g.angles[i] = rng() % n_orients;
+}
+
+// --- Оценка приспособленности (fitness) ---
+double evaluate_genome(
+    Genome& g,
+    const std::vector<RawPart>& parts,
+    const std::vector<std::vector<Orient>>& all_orients,
+    double W, double H, double grid,
+    std::unordered_map<Key, Paths64>& sharedNFP,
+    std::mutex& nfp_mutex,
+    const CLI* cli_ptr
+) {
+    // Собираем перестановку и ориентации
+    std::vector<RawPart> perm(parts.size());
+    for (size_t i = 0; i < parts.size(); ++i)
+        perm[i] = parts[g.order[i]];
+    // Собираем ориентации
+    std::vector<std::vector<Orient>> orient(parts.size());
+    for (size_t i = 0; i < parts.size(); ++i) {
+        orient[i].push_back(all_orients[perm[i].id][g.angles[i]]);
+    }
+    std::unordered_map<Key, Paths64> localNFP;
+    auto layout = greedy(perm, orient, W, H, grid, 0, localNFP, sharedNFP, nfp_mutex, cli_ptr);
+    double area = computeArea(layout, perm);
+    g.fitness = area;
+    g.layout = layout;
+    return area;
+}
+
+// --- Генетический алгоритм основной цикл ---
+// Добавлен параметр seed_layout для передачи стартовой особи
+std::vector<Place> genetic_nesting(
+    const std::vector<RawPart>& parts,
+    const std::vector<std::vector<Orient>>& all_orients,
+    double W, double H, double grid,
+    std::unordered_map<Key, Paths64>& sharedNFP,
+    std::mutex& nfp_mutex,
+    const CLI* cli_ptr,
+    int generations = 30,
+    int pop_size = 20,
+    const std::vector<Place>& seed_layout = {} // новый параметр
+) {
+    std::mt19937 rng(std::random_device{}());
+    size_t n = parts.size();
+    size_t n_orients = all_orients[0].size();
+    std::vector<Genome> pop(pop_size);
+    // Инициализация популяции
+    for (int i = 0; i < pop_size; ++i)
+        pop[i] = random_genome(n, n_orients, rng);
+
+    // Если есть seed_layout, используем его как первую особь
+    if (!seed_layout.empty()) {
+        // Восстановить порядок и ориентации из seed_layout
+        Genome g;
+        g.order.resize(seed_layout.size());
+        g.angles.resize(seed_layout.size());
+        for (size_t i = 0; i < seed_layout.size(); ++i) {
+            g.order[i] = seed_layout[i].id;
+            // Найти индекс ориентации по углу
+            int ang_idx = 0;
+            for (size_t j = 0; j < all_orients[g.order[i]].size(); ++j) {
+                if (all_orients[g.order[i]][j].ang == seed_layout[i].ang) {
+                    ang_idx = int(j);
+                    break;
+                }
+            }
+            g.angles[i] = ang_idx;
+        }
+        evaluate_genome(g, parts, all_orients, W, H, grid, sharedNFP, nfp_mutex, cli_ptr);
+        pop[0] = g;
+    }
+
+    // ...existing code for GA generations...
+    for (int gen = 0; gen < generations; ++gen) {
+        // Сортировка по fitness
+        std::sort(pop.begin(), pop.end(), [](const Genome& a, const Genome& b) {
+            return a.fitness < b.fitness;
+        });
+        // Элитизм: сохраняем лучших
+        int elite = pop_size / 5;
+        std::vector<Genome> next(pop.begin(), pop.begin() + elite);
+        // Новое поколение
+        while (next.size() < pop_size) {
+            int i1 = rng() % (pop_size/2), i2 = rng() % (pop_size/2);
+            Genome child = crossover(pop[i1], pop[i2], rng);
+            mutate(child, n_orients, rng, 0.2);
+            evaluate_genome(child, parts, all_orients, W, H, grid, sharedNFP, nfp_mutex, cli_ptr);
+            next.push_back(child);
+        }
+        pop = std::move(next);
+        std::cerr << "[GA] Generation " << gen+1 << " best area: " << pop[0].fitness << " mm2, placed: " << pop[0].layout.size() << "/" << n << "\n";
+    }
+    // Вернуть лучшую раскладку
+    return pop[0].layout;
+}
+
+
+// Сконцентрированная версия функции main с «слиянием» логики greedy‑итераций и GA‑улучшения.
+// * убраны дублирующиеся переменные (localNFP, bestIdx, finalBest)
+// * greedy‑раскладка теперь считается один раз для каждой «итерации»
+// * лучший результат greedy передаётся в genetic_nesting как стартовая особь
+// * итоговый bestLayout определяется как min(area) среди greedy & GA
+// -----------------------------------------------------------------------------
+int main(int argc, char* argv[])
+{
     try {
-        auto cli = parse(argc, argv);
-        
+        CLI cli = parse(argc, argv);
+
+        // ─── Debug‑вывод параметров ───────────────────────────────────────────
+        std::cerr << "[PARAMS] Sheet: " << cli.W << "x" << cli.H << " mm\n"
+                  << "         Grid: " << cli.grid << " mm\n"
+                  << "         Rot step: " << cli.rot << "°\n"
+                  << "         Iterations: " << cli.iter << "\n";
+
+        // ─── Загрузка деталей из JSON ────────────────────────────────────────
         std::vector<RawPart> parts;
-        for(size_t idx=0; idx<cli.files.size(); ++idx) {
-            auto pvec = loadPartsFromJson(cli.files[idx]);
-            int cnt = (idx < cli.nums.size() ? cli.nums[idx] : 1);
-            for(int r=0; r<cnt; ++r)
-                for(const auto& base : pvec) {
+        for (size_t idx = 0; idx < cli.files.size(); ++idx) {
+            auto batch = loadPartsFromJson(cli.files[idx]);
+            int copies = (idx < cli.nums.size() ? cli.nums[idx] : 1);
+            for (int c = 0; c < copies; ++c)
+                for (const auto& base : batch) {
                     RawPart p = base;
                     p.id = int(parts.size());
-                    parts.push_back(p);
+                    parts.push_back(std::move(p));
                 }
         }
-        std::vector<RawPart*> order;
-        order.reserve(parts.size());
-        for (auto& p : parts) order.push_back(&p);
-        auto h = [](const RawPart& q){
-            auto bb = getBBox(q.rings[0]);
-            return bb.top - bb.bottom; // int64
-        };
-        std::sort(order.begin(), order.end(),
-                [&](RawPart* a, RawPart* b){ return h(*a) > h(*b); });
-        // ВАЖНО: вычисляем повороты только один раз!
-        auto all_orients = makeOrient(parts, cli.rot);
-        order.reserve(parts.size());
-        for (auto& p : parts) order.push_back(&p);
-        std::sort(order.begin(), order.end(), [](RawPart* a, RawPart* b){
-            return getBBox(a->rings[0]).Height() > getBBox(b->rings[0]).Height();
-        });
-        for (size_t i = 0; i < parts.size(); ++i) {
-            auto& p = parts[i];
-            if (p.rings.empty()) {
-                std::cerr << "[WARN] Part #" << i << " пустой!\n";
-            } else {
-                auto bb = getBBox(p.rings[0]);
-                std::cerr << "[CHECK] Part #" << i
-                        << " bbox: " << Dbl(bb.right - bb.left) << "x" << Dbl(bb.top - bb.bottom)
-                        << " мм, area: " << p.area << " мм²\n";
-            }
-        }
-        int total_iter = cli.iter > 0 ? cli.iter : 1;
-        std::vector<std::vector<Place>> allLayouts(total_iter);
-        std::cerr << "[INFO] Загружено " << parts.size() << " деталей\n";
-        std::cerr << "[INFO] Начинаю " << total_iter << " итераций...\n";
-        std::vector<double> allAreas(total_iter, std::numeric_limits<double>::max());
+        if (parts.empty())
+            throw std::runtime_error("no parts loaded");
 
-        std::atomic<int> finished_iters{0};
-        std::vector<std::thread> threads;
-        
+        // ─── Предрасчёт поворотов ────────────────────────────────────────────
+        const auto all_orients = makeOrient(parts, cli.rot);
+
+        // ─── Greedy‑итерации (параллельно) ───────────────────────────────────
+        const int total_iter = std::max(1, cli.iter);
+        std::vector<std::vector<Place>> greedyLayouts(total_iter);
+        std::vector<double>                greedyArea(total_iter, 1e100);
+
+        std::atomic<int> done{0};
+        std::vector<std::thread> workers;
         for (int it = 0; it < total_iter; ++it) {
-            threads.emplace_back([&, it]() {
+            workers.emplace_back([&, it]() {
                 std::unordered_map<Key, Paths64> localNFP;
-
-                unsigned int my_seed = static_cast<unsigned int>(
-                    std::chrono::steady_clock::now().time_since_epoch().count() + it * 1337
-                );
-                if (it == 0) my_seed = 0;
-                std::cerr << "[INFO] Итер " << it+1 << "/" << total_iter << "...\n";
-                auto layout = greedy(parts, all_orients, cli.W, cli.H, cli.grid, my_seed, localNFP, sharedNFP, nfp_mutex, &cli);
-                double area = computeArea(layout, parts);
-
-                {
-                    std::lock_guard<std::mutex> lock(result_mutex);
-                    allLayouts[it] = layout;
-                    allAreas[it] = area;
-                }
-                {
-                    std::lock_guard<std::mutex> out_lock(output_mutex);
-                    std::cerr << "[DONE] Итерация " << it+1 << ": размещено "
-                            << layout.size() << "/" << parts.size() << " деталей\n" << std::flush;
-                }
-                int done = ++finished_iters;
-                if (done % 2 == 0 || done == total_iter) {
-                    std::lock_guard<std::mutex> out_lock(output_mutex);
-                    std::cerr << "[PROGRESS] " << done << "/" << total_iter << " итераций завершено\n";
-                }
+                unsigned int seed = (it == 0 ? 0u :                         // первая итерация детерминирована
+                                      unsigned(std::chrono::steady_clock::now()
+                                               .time_since_epoch().count()) + it);
+                auto layout = greedy(parts, all_orients, cli.W, cli.H, cli.grid,
+                                      seed, localNFP, sharedNFP, nfp_mutex, &cli);
+                double area  = computeArea(layout, parts);
+                greedyLayouts[it] = std::move(layout);
+                greedyArea[it]   = area;
+                if (++done % 2 == 0 || done == total_iter)
+                    std::cerr << "[GREEDY] finished " << done << "/" << total_iter << "\n";
             });
         }
-        
-        for (auto& th : threads) th.join();
-        {
-            std::lock_guard<std::mutex> out_lock(output_mutex);
-            std::cerr << "[INFO] Все итерации завершены\n";
-        }
-        // --- ОСТАЛЬНОЕ КАК РАНЬШЕ ---
-        size_t bestIdx = 0;
-        for (size_t i = 1; i < allAreas.size(); ++i)
-            if (allAreas[i] < allAreas[bestIdx])
-                bestIdx = i;
-        const std::vector<Place>& finalBest = allLayouts[bestIdx];
+        for (auto& t : workers) t.join();
 
-        // Экспорт CSV
-        std::ofstream f(cli.out);
-        f << "part,x_mm,y_mm,angle\n";
-        for (const auto& p : finalBest)
-            f << p.id << "," << std::fixed << std::setprecision(3)
-              << p.x << "," << p.y << "," << p.ang << "\n";
+        // ─── Лучший greedy‑результат ─────────────────────────────────────────
+        int bestGreedyIdx = int(std::min_element(greedyArea.begin(), greedyArea.end()) - greedyArea.begin());
+        const auto& seedLayout = greedyLayouts[bestGreedyIdx];
+        double bestGreedyArea  = greedyArea[bestGreedyIdx];
+        std::cerr << "[GREEDY] best area " << bestGreedyArea << " mm² (iter " << bestGreedyIdx << ")\n";
 
-        std::cout << "placed " << finalBest.size() << "/" << parts.size()
-                  << " → " << cli.out << "\n";
-        ExportToDXF("output.dxf", parts);
-        std::cout << "DXF exported to output.dxf\n";
-        ExportPlacedToDXF("layout.dxf", parts, finalBest, cli.W, cli.H);
-        std::cout << "Placed DXF exported to layout.dxf\n";
+        // ─── Genetic‑улучшение ───────────────────────────────────────────────
+        auto gaLayout = genetic_nesting(parts, all_orients,
+                                        cli.W, cli.H, cli.grid,
+                                        sharedNFP, nfp_mutex, &cli,
+                                        /*generations*/ 30,
+                                        /*pop size  */ 20,
+                                        seedLayout);
+        double gaArea = computeArea(gaLayout, parts);
+        std::cerr << "[GA]    final area " << gaArea << " mm²\n";
 
+        // ─── Выбор окончательного расклада ───────────────────────────────────
+        const auto& bestLayout = (gaArea < bestGreedyArea ? gaLayout : seedLayout);
+
+        // ─── Экспорт результатов ─────────────────────────────────────────────
+        std::ofstream csv(cli.out);
+        csv << "part,x_mm,y_mm,angle\n";
+        for (const auto& pl : bestLayout)
+            csv << pl.id << ',' << std::fixed << std::setprecision(3)
+                << pl.x << ',' << pl.y << ',' << pl.ang << "\n";
+        std::cout << "placed " << bestLayout.size() << '/' << parts.size()
+                  << "  ->  " << cli.out << "\n";
+
+        ExportPlacedToDXF("layout.dxf", parts, bestLayout, cli.W, cli.H);
+        std::cout << "DXF exported to layout.dxf\n";
         return 0;
-
-    } catch (const std::exception& e) {
+    }
+    catch (const std::exception& e) {
         std::cerr << "ERR: " << e.what() << "\n";
         return 1;
     }

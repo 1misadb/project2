@@ -1,7 +1,7 @@
 import subprocess
 import sys
 import os
-
+sys.stdout.reconfigure(encoding='utf-8')
 def usage():
     print("Пример использования:")
     print("  python auto_nest.py -s 2000x2000 [-i N] part1.dxf:3 part2.dxf:1 ...")

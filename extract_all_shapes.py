@@ -170,6 +170,23 @@ def main(argv=None):
     details = extract_all_details(in_dxf, tol=0.05)
     if repeat > 1:
         details = details * repeat
+    
+    # === БЛОК ДЛЯ ВЫВОДА ГАБАРИТОВ КАЖДОЙ ДЕТАЛИ ===
+    print("\nГабариты деталей:")
+    for idx, detail_paths in enumerate(details):
+        xs = []
+        ys = []
+        for path in detail_paths:
+            xs.extend([pt[0] for pt in path])
+            ys.extend([pt[1] for pt in path])
+        min_x = min(xs)
+        max_x = max(xs)
+        min_y = min(ys)
+        max_y = max(ys)
+        width = max_x - min_x
+        height = max_y - min_y
+        print(f"Деталь {idx+1}: X от {min_x:.2f} до {max_x:.2f} (ширина {width:.2f} мм), "
+            f"Y от {min_y:.2f} до {max_y:.2f} (высота {height:.2f} мм)")
     with open(out_json, "w") as f:
         json.dump(details, f, indent=0)
     print(f"Saved {len(details)} details to {out_json} (repeat={repeat})")

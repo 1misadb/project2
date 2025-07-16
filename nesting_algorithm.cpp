@@ -91,6 +91,33 @@ using Key = uint64_t;
 static Key kfn(int a, int ra, int b, int rb){
     return ((uint64_t)a<<48) ^ ((uint64_t)ra<<32) ^ ((uint64_t)b<<16) ^ (uint64_t)rb;
 }
+// --- Overlap cache key structure ---
+struct OverlapKey {
+    int part_a, ang_a;
+    int64_t x_a, y_a;
+    int part_b, ang_b;
+    int64_t x_b, y_b;
+    bool operator==(const OverlapKey& o) const {
+        return part_a==o.part_a && ang_a==o.ang_a && x_a==o.x_a && y_a==o.y_a &&
+               part_b==o.part_b && ang_b==o.ang_b && x_b==o.x_b && y_b==o.y_b;
+    }
+};
+namespace std {
+    template<>
+    struct hash<OverlapKey> {
+        size_t operator()(const OverlapKey& k) const {
+            size_t h = hash<int>()(k.part_a) ^ (hash<int>()(k.ang_a)<<1);
+            h ^= (hash<int64_t>()(k.x_a)<<2) ^ (hash<int64_t>()(k.y_a)<<3);
+            h ^= (hash<int>()(k.part_b)<<4) ^ (hash<int>()(k.ang_b)<<5);
+            h ^= (hash<int64_t>()(k.x_b)<<6) ^ (hash<int64_t>()(k.y_b)<<7);
+            return h;
+        }
+    };
+}
+
+// --- Global overlap cache ---
+static std::unordered_map<OverlapKey, bool> overlapCache;
+static std::mutex overlapCacheMutex;
 static std::unordered_map<Key, Paths64> gNfpCache;
 static std::mutex gNfpMutex;
 std::mutex result_mutex;
@@ -110,8 +137,8 @@ struct CLI{
     std::vector<int> nums;
     int num = 1;
     bool joinSegments = false;
-    int iter = 5; 
-    int cand_limit = 100000;
+    int iter = 1; 
+    int cand_limit = 2000;
     int nfp_limit = 20000;
     int overlap_limit = 20000;
     double time_limit = 3000.0;
@@ -209,7 +236,6 @@ static inline double areaMM2(const Paths64& p)
 }
 
 // Test for polygon overlap
-
 bool overlap(const Paths64& a, const Paths64& b) {
     Paths64 ua = Union(a, FillRule::NonZero);
     Paths64 ub = Union(b, FillRule::NonZero);
@@ -1019,7 +1045,7 @@ static std::vector<Place> greedy(
 ) {
     size_t CAND_LIMIT = 1e6;
     size_t NFP_LIMIT = 50000;
-    int MAX_OVERLAP_CHECKS = 50000;
+    int MAX_OVERLAP_CHECKS = 1000;
     double MAX_TIME_PER_PART = 100000.0;
     if (cli_ptr) {
         CAND_LIMIT = cli_ptr->cand_limit;
@@ -1145,7 +1171,32 @@ static std::vector<Place> greedy(
                             bbPl.top   < bbMoved.bottom || bbPl.bottom > bbMoved.top)
                             continue;
                         overlap_checks++;
-                        bool ov = overlap(pl, moved);
+                        const auto& po = placedOrient[pi]; // ориентация уже размещённой детали
+                        const auto& ps = placedShapes[pi]; // shape уже размещённой детали
+                        int64_t cx = I64mm(c.x), cy = I64mm(c.y);
+
+                        OverlapKey key{
+                            op.id, op.ang, cx, cy,       // новая деталь (id, угол, x, y)
+                            po.id, po.ang, 0, 0          // уже размещённая деталь (считаем по (0,0))
+                        };
+
+                        bool ov = false;
+                        bool found = false;
+                        {
+                            std::lock_guard<std::mutex> lock(overlapCacheMutex);
+                            auto it = overlapCache.find(key);
+                            if (it != overlapCache.end()) {
+                                ov = it->second;
+                                found = true;
+                            }
+                        }
+                        if (!found) {
+                            ov = overlap(ps, moved);
+                            std::lock_guard<std::mutex> lock(overlapCacheMutex);
+                            overlapCache[key] = ov;
+                        }
+
+                        // --- дальше условия такие же, как были ---
                         if (bbPl.right < bb.left || bbPl.left > bb.right ||
                             bbPl.top < bb.bottom || bbPl.bottom > bb.top)
                             continue;
@@ -1219,8 +1270,6 @@ static std::vector<Place> greedy(
     }
     return layout;
 }
-
-
 
 
 // Display usage information
@@ -1439,22 +1488,24 @@ double evaluate_genome(
     std::mutex& nfp_mutex,
     const CLI* cli_ptr
 ) {
-    // Собираем перестановку и ориентации
+    // Собираем перестановку деталей в соответствии с порядком из генома
     std::vector<RawPart> perm(parts.size());
-    for (size_t i = 0; i < parts.size(); ++i)
-        perm[i] = parts[g.order[i]];
-    // Собираем ориентации
-    std::vector<std::vector<Orient>> orient(parts.size());
+    std::vector<std::vector<Orient>> perm_orients(parts.size());
     for (size_t i = 0; i < parts.size(); ++i) {
-        orient[i].push_back(all_orients[perm[i].id][g.angles[i]]);
+        perm[i] = parts[g.order[i]];
+        perm_orients[i] = all_orients[g.order[i]];
     }
+
+    // Вызываем greedy с полной таблицей ориентаций (perm_orients)
     std::unordered_map<Key, Paths64> localNFP;
-    auto layout = greedy(perm, orient, W, H, grid, 0, localNFP, sharedNFP, nfp_mutex, cli_ptr);
+    auto layout = greedy(perm, perm_orients, W, H, grid, 0, localNFP, sharedNFP, nfp_mutex, cli_ptr);
+
     double area = computeArea(layout, perm);
     g.fitness = area;
     g.layout = layout;
     return area;
 }
+
 
 // --- Генетический алгоритм основной цикл ---
 // Добавлен параметр seed_layout для передачи стартовой особи
@@ -1465,9 +1516,9 @@ std::vector<Place> genetic_nesting(
     std::unordered_map<Key, Paths64>& sharedNFP,
     std::mutex& nfp_mutex,
     const CLI* cli_ptr,
-    int generations = 30,
-    int pop_size = 20,
-    const std::vector<Place>& seed_layout = {} // новый параметр
+    int generations = 4,
+    int pop_size = 4,
+    const std::vector<Place>& seed_layout = {} 
 ) {
     std::mt19937 rng(std::random_device{}());
     size_t n = parts.size();
@@ -1509,13 +1560,21 @@ std::vector<Place> genetic_nesting(
         int elite = pop_size / 5;
         std::vector<Genome> next(pop.begin(), pop.begin() + elite);
         // Новое поколение
-        while (next.size() < pop_size) {
-            int i1 = rng() % (pop_size/2), i2 = rng() % (pop_size/2);
-            Genome child = crossover(pop[i1], pop[i2], rng);
-            mutate(child, n_orients, rng, 0.2);
+        std::vector<Genome> children(pop_size - elite);
+
+        #pragma omp parallel for
+        for (int k = 0; k < int(children.size()); ++k) {
+            std::mt19937 thread_rng(rng()); 
+            int i1 = thread_rng() % (pop_size/2), i2 = thread_rng() % (pop_size/2);
+            Genome child = crossover(pop[i1], pop[i2], thread_rng);
+            mutate(child, n_orients, thread_rng, 0.2);
             evaluate_genome(child, parts, all_orients, W, H, grid, sharedNFP, nfp_mutex, cli_ptr);
-            next.push_back(child);
+            children[k] = std::move(child);
         }
+
+        // потом добавь их к next (после elits):
+        for (auto& child : children)
+            next.push_back(std::move(child));
         pop = std::move(next);
         std::cerr << "[GA] Generation " << gen+1 << " best area: " << pop[0].fitness << " mm2, placed: " << pop[0].layout.size() << "/" << n << "\n";
     }
@@ -1525,7 +1584,6 @@ std::vector<Place> genetic_nesting(
 
 
 // Сконцентрированная версия функции main с «слиянием» логики greedy‑итераций и GA‑улучшения.
-// * убраны дублирующиеся переменные (localNFP, bestIdx, finalBest)
 // * greedy‑раскладка теперь считается один раз для каждой «итерации»
 // * лучший результат greedy передаётся в genetic_nesting как стартовая особь
 // * итоговый bestLayout определяется как min(area) среди greedy & GA
@@ -1593,8 +1651,8 @@ int main(int argc, char* argv[])
         auto gaLayout = genetic_nesting(parts, all_orients,
                                         cli.W, cli.H, cli.grid,
                                         sharedNFP, nfp_mutex, &cli,
-                                        /*generations*/ 30,
-                                        /*pop size  */ 20,
+                                        /*generations*/ 4,
+                                        /*pop size  */ 4,
                                         seedLayout);
         double gaArea = computeArea(gaLayout, parts);
         std::cerr << "[GA]    final area " << gaArea << " mm²\n";

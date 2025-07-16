@@ -8,7 +8,7 @@
 //   • Header‑only зависимость: Clipper2 (https://github.com/AngusJohnson/Clipper2)
 // --------------------------------------------------------------------
 //  Build (g++ / MSVC):
-//      cl /EHsc /std:c++17 /O2 clipper3\src\clipper.engine.cpp clipper3\src\clipper.offset.cpp clipper3\src\clipper.rectclip.cpp nesting_algorithm.cpp /Iclipper3\include /I. /Fe:nest.exe
+//      cl /EHsc /std:c++17 /O2 /openmp clipper3\src\clipper.engine.cpp clipper3\src\clipper.offset.cpp clipper3\src\clipper.rectclip.cpp nesting_algorithm.cpp /Iclipper3\include /I. /Fe:nest.exe
 // --------------------------------------------------------------------
 // для нестинга полная для раскладки через питон парсер полная схема лежит в редми используюет джейсон пакет предпологает что координаты будут лежать в массиве 
 // в виде poliny так как перебирать багованые координаты через C++ это дело не состоятельное и лучшен использовать готовую провереную итоговую питон библиотеку  
@@ -27,6 +27,8 @@
 #include <stdexcept>
 #include <cstdint>
 #include <array>
+#include <deque>
+#include <tuple>
 #include <random>
 #include <mutex>
 #include <chrono>
@@ -43,6 +45,7 @@
 #include "clipper3/clipper.minkowski.h"
 #include <json.hpp>
 double gUnit = 1.0;
+bool gVerbose = false;
 using namespace Clipper2Lib;
 
 static std::string trim(const std::string& s) {
@@ -102,6 +105,18 @@ struct OverlapKey {
                part_b==o.part_b && ang_b==o.ang_b && x_b==o.x_b && y_b==o.y_b;
     }
 };
+static inline OverlapKey makeKey(int pa,int aa,int64_t xa,int64_t ya,
+                                 int pb,int ab,int64_t xb,int64_t yb){
+    OverlapKey k{pa,aa,xa,ya,pb,ab,xb,yb};
+    if(std::tie(k.part_a,k.ang_a,k.x_a,k.y_a) >
+       std::tie(k.part_b,k.ang_b,k.x_b,k.y_b)){
+        std::swap(k.part_a,k.part_b);
+        std::swap(k.ang_a,k.ang_b);
+        std::swap(k.x_a,k.x_b);
+        std::swap(k.y_a,k.y_b);
+    }
+    return k;
+}
 namespace std {
     template<>
     struct hash<OverlapKey> {
@@ -117,7 +132,10 @@ namespace std {
 
 // --- Global overlap cache ---
 static std::unordered_map<OverlapKey, bool> overlapCache;
-static std::mutex overlapCacheMutex;
+static std::deque<OverlapKey> overlapOrder;
+static std::array<std::mutex,64> overlapCacheMutexes;
+static std::mutex overlapOrderMutex;
+constexpr size_t OVERLAP_CACHE_MAX = 20000;
 static std::unordered_map<Key, Paths64> gNfpCache;
 static std::mutex gNfpMutex;
 std::mutex result_mutex;
@@ -142,7 +160,8 @@ struct CLI{
     int nfp_limit = 20000;
     int overlap_limit = 20000;
     double time_limit = 3000.0;
-};         
+    bool verbose = false;
+};
 // base tolerance in mm
 inline int64_t tol_mm() { return llround(TOL_MM * SCALE); }
 // Преобразование double → int64 с учетом SCALE
@@ -524,23 +543,28 @@ static bool parseSpline(DXFReader& rd, Path64& out, int segNo)
         auto poly = approximateSpline(ctrlVec, knotVec, degree, 1000);
         out.insert(out.end(), poly.begin(), poly.end());
     }
-    std::cerr << "ctrlPts.size()=" << ctrlPts.size() << ", knotVec.size()=" << knotVec.size() << ", degree=" << degree << '\n';
-    std::cerr << "SPLINE closed flag=" << closed << "   isClosed(path)=" << isClosed(out) << '\n';
+    if(gVerbose){
+        std::cerr << "ctrlPts.size()=" << ctrlPts.size() << ", knotVec.size()=" << knotVec.size() << ", degree=" << degree << '\n';
+        std::cerr << "SPLINE closed flag=" << closed << "   isClosed(path)=" << isClosed(out) << '\n';
+    }
     // --- Замыкание ---
     if (!out.empty()) {
         if (closed) {
             int64_t dist = distance(out.front(), out.back());
             if (dist > tol_mm()) {
-                std::cerr << "[FORCE] spline " << segNo
-                        << " forcibly closed, big gap=" << Dbl(dist) << " mm\n";
+                if(gVerbose)
+                    std::cerr << "[FORCE] spline " << segNo
+                              << " forcibly closed, big gap=" << Dbl(dist) << " mm\n";
                 out.push_back(out.front());
             } else if (dist <= tol_mm() && out.front() != out.back()) {
                 out.push_back(out.front());
-                std::cerr << "[AutoClose] spline " << segNo
-                        << " closed (distance=" << Dbl(dist) << " mm)\n";
+                if(gVerbose)
+                    std::cerr << "[AutoClose] spline " << segNo
+                              << " closed (distance=" << Dbl(dist) << " mm)\n";
             } else if (dist > tol_mm()) {
-                std::cerr << "[Warn] spline " << segNo
-                        << " not closed, gap=" << Dbl(dist) << " mm\n";
+                if(gVerbose)
+                    std::cerr << "[Warn] spline " << segNo
+                              << " not closed, gap=" << Dbl(dist) << " mm\n";
             }
         }
     }
@@ -552,11 +576,12 @@ static bool parseSpline(DXFReader& rd, Path64& out, int segNo)
         out.erase(out.begin());
 
     // --- Debug ---
-    std::cerr << " flags: closed="<<closed<<"  degree="<<degree
-              << "  fit="<<fitPts.size()<<"  ctrl="<<ctrlPts.size()
-              << "  knots="<<knotVec.size() << '\n';
+    if(gVerbose)
+        std::cerr << " flags: closed="<<closed<<"  degree="<<degree
+                  << "  fit="<<fitPts.size()<<"  ctrl="<<ctrlPts.size()
+                  << "  knots="<<knotVec.size() << '\n';
 
-    if(out.empty())
+    if(out.empty() && gVerbose)
         std::cerr << "  !! spline #" << segNo << " → no points parsed\n";
     return !out.empty();
 }
@@ -670,13 +695,15 @@ static Paths64 connectSegments(const std::vector<Path64>& segs)
             if(dist <= tol_mm())
             {
                 path.push_back(path.front());
-                std::cerr << "[AutoClose] path " << out.size()
-                          << " closed (distance=" << Dbl(dist) << " mm)\n";
+                if(gVerbose)
+                    std::cerr << "[AutoClose] path " << out.size()
+                              << " closed (distance=" << Dbl(dist) << " mm)\n";
             }
             else
             {
-                std::cerr << "[Warn] open path " << out.size()
-                          << " gap=" << Dbl(dist) << " mm\n";
+                if(gVerbose)
+                    std::cerr << "[Warn] open path " << out.size()
+                              << " gap=" << Dbl(dist) << " mm\n";
             }
         }
 
@@ -688,9 +715,10 @@ static Paths64 connectSegments(const std::vector<Path64>& segs)
             out.push_back(std::move(path));
             Rect64 bb = getBBox(out.back());
             double len = pathLength(out.back());
-            std::cerr << " [path " << out.size()-1 << "] len=" << len << " mm bbox="
-                      << Dbl(bb.right-bb.left) << "x" << Dbl(bb.top-bb.bottom)
-                      << " closed=" << (closed?"yes":"no") << "\n";
+            if(gVerbose)
+                std::cerr << " [path " << out.size()-1 << "] len=" << len << " mm bbox="
+                          << Dbl(bb.right-bb.left) << "x" << Dbl(bb.top-bb.bottom)
+                          << " closed=" << (closed?"yes":"no") << "\n";
         }
     }
 
@@ -701,13 +729,15 @@ static Paths64 connectSegments(const std::vector<Path64>& segs)
         ptcnt[key(segs[i].front())]++;
         ptcnt[key(segs[i].back())]++;
     }
-    std::cerr << "Dangling ends: ";
-    for (auto& p : ptcnt)
-        if (p.second % 2 != 0)
-            std::cerr << "(" << Dbl(p.first.first*TOL) << "," << Dbl(p.first.second*TOL) << ") ";
-    std::cerr << "\n";
-    std::cerr << "Segments=" << segs.size() << " Paths=" << out.size()
-              << " Closed=" << closedCnt << "\n";
+    if(gVerbose){
+        std::cerr << "Dangling ends: ";
+        for (auto& p : ptcnt)
+            if (p.second % 2 != 0)
+                std::cerr << "(" << Dbl(p.first.first*TOL) << "," << Dbl(p.first.second*TOL) << ") ";
+        std::cerr << "\n";
+        std::cerr << "Segments=" << segs.size() << " Paths=" << out.size()
+                  << " Closed=" << closedCnt << "\n";
+    }
     return out;
 }
 
@@ -1007,7 +1037,8 @@ static std::vector<Point64> candidates(const std::vector<Paths64>& placed,
     }
     if (out.size() >= MAX_GRID_PTS) {
         std::lock_guard<std::mutex> lock(output_mutex);
-        std::cerr << "[WARN] grid candidate limit reached" << std::endl;
+        if(gVerbose)
+            std::cerr << "[WARN] grid candidate limit reached" << std::endl;
     }
     return out;
 }
@@ -1027,8 +1058,8 @@ static double computeArea(const std::vector<Place>& layout, const std::vector<Ra
     Rect64 bb = getBBox(all);
     return Dbl(bb.right - bb.left) * Dbl(bb.top - bb.bottom);
 }
-const int MAX_OVERLAP_CHECKS = 50;           // Максимум overlap-проверок на одну деталь (было 200)
-const double MAX_TIME_PER_PART = 0.5;        // Секунд на одну деталь (было 2.0)
+const int MAX_OVERLAP_CHECKS = 100;          // Максимум overlap-проверок по умолчанию
+const double MAX_TIME_PER_PART = 0.5;        // Секунд на одну деталь по умолчанию
 
 auto part_start = std::chrono::steady_clock::now();
 int overlap_checks = 0;
@@ -1045,8 +1076,8 @@ static std::vector<Place> greedy(
 ) {
     size_t CAND_LIMIT = 1e6;
     size_t NFP_LIMIT = 50000;
-    int MAX_OVERLAP_CHECKS = 1000;
-    double MAX_TIME_PER_PART = 100000.0;
+    int MAX_OVERLAP_CHECKS = 100;
+    double MAX_TIME_PER_PART = 0.5;
     if (cli_ptr) {
         CAND_LIMIT = cli_ptr->cand_limit;
         NFP_LIMIT = cli_ptr->nfp_limit;
@@ -1069,7 +1100,8 @@ static std::vector<Place> greedy(
     for (size_t i = 0; i < ord.size(); ++i) {
         overlap_checks = 0;                      // ① обнулить перед деталью
         auto part_start = std::chrono::steady_clock::now();   // ② время – локально
-        std::cerr << "[STEP] Размещаю деталь " << i << " (ID " << ord[i].id << ") ...\n";
+        if(gVerbose)
+            std::cerr << "[STEP] Размещаю деталь " << i << " (ID " << ord[i].id << ") ...\n";
         if (ord[i].rings.empty()) {
             std::cerr << "[ERROR] Деталь " << i << " пуста! Пропускаю.\n";
             continue;
@@ -1087,7 +1119,8 @@ static std::vector<Place> greedy(
         Orient bestOrient{};
 
 #pragma omp parallel
-        {
+        {   
+            std::unordered_map<Key, Paths64> localNFP;
             int localBestOrientIdx = -1;
             double localBestCost = 1e100;
             Place localBestPl{};
@@ -1175,15 +1208,18 @@ static std::vector<Place> greedy(
                         const auto& ps = placedShapes[pi]; // shape уже размещённой детали
                         int64_t cx = I64mm(c.x), cy = I64mm(c.y);
 
-                        OverlapKey key{
-                            op.id, op.ang, cx, cy,       // новая деталь (id, угол, x, y)
-                            po.id, po.ang, 0, 0          // уже размещённая деталь (считаем по (0,0))
-                        };
+                        int64_t xb = bbPl.left;
+                        int64_t yb = bbPl.bottom;
+                        OverlapKey key = makeKey(
+                            op.id, op.ang, cx, cy,
+                            po.id, po.ang, xb, yb
+                        );
 
                         bool ov = false;
                         bool found = false;
+                        size_t idx_mutex = std::hash<OverlapKey>{}(key) & 63;
                         {
-                            std::lock_guard<std::mutex> lock(overlapCacheMutex);
+                            std::lock_guard<std::mutex> lock(overlapCacheMutexes[idx_mutex]);
                             auto it = overlapCache.find(key);
                             if (it != overlapCache.end()) {
                                 ov = it->second;
@@ -1192,8 +1228,21 @@ static std::vector<Place> greedy(
                         }
                         if (!found) {
                             ov = overlap(ps, moved);
-                            std::lock_guard<std::mutex> lock(overlapCacheMutex);
-                            overlapCache[key] = ov;
+                            {
+                                std::lock_guard<std::mutex> lock(overlapCacheMutexes[idx_mutex]);
+                                overlapCache[key] = ov;
+                            }
+                            {
+                                std::lock_guard<std::mutex> lk(overlapOrderMutex);
+                                overlapOrder.push_back(key);
+                                if (overlapOrder.size() > OVERLAP_CACHE_MAX) {
+                                    OverlapKey old = overlapOrder.front();
+                                    overlapOrder.pop_front();
+                                    size_t idx_old = std::hash<OverlapKey>{}(old) & 63;
+                                    std::lock_guard<std::mutex> lock2(overlapCacheMutexes[idx_old]);
+                                    overlapCache.erase(old);
+                                }
+                            }
                         }
 
                         // --- дальше условия такие же, как были ---
@@ -1238,7 +1287,7 @@ static std::vector<Place> greedy(
             placedShapes.push_back(std::move(moved));
             placedOrient.push_back(op);
             layout.push_back(c);
-            {
+            if(gVerbose){
                 std::lock_guard<std::mutex> lock(output_mutex);
                 std::cerr << "[PLACED] Part " << i << " (ID " << op.id << ") at (x=" << c.x << ", y=" << c.y << ", angle=" << c.ang << ")\n";
             }
@@ -1249,8 +1298,9 @@ static std::vector<Place> greedy(
                 fb.bottom += I64mm(c.y);
                 fb.top    += I64mm(c.y);
                 std::lock_guard<std::mutex> lock(output_mutex);
-                std::cerr << "[FIRST] bbox=" << rectToStr(fb)
-                          << " pos=(" << c.x << "," << c.y << ")\n";
+                if(gVerbose)
+                    std::cerr << "[FIRST] bbox=" << rectToStr(fb)
+                              << " pos=(" << c.x << "," << c.y << ")\n";
             }
             ok = true;
         }
@@ -1258,13 +1308,15 @@ static std::vector<Place> greedy(
         double t_sec = std::chrono::duration<double>(t_end - t_start).count();
         {
             std::lock_guard<std::mutex> lock(output_mutex);
-            std::cerr << "[INFO] Время размещения детали " << i << ": " << t_sec << " сек\n";
-            std::cerr << "[INFO] Невалидных кандидатов по bbox для детали " << i
-                      << ": " << invalidBB_total << "\n";
-            if(i==0 && firstTooBig)
-                std::cerr << "Первый part слишком велик\n";
+            if(gVerbose){
+                std::cerr << "[INFO] Время размещения детали " << i << ": " << t_sec << " сек\n";
+                std::cerr << "[INFO] Невалидных кандидатов по bbox для детали " << i
+                          << ": " << invalidBB_total << "\n";
+                if(i==0 && firstTooBig)
+                    std::cerr << "Первый part слишком велик\n";
+            }
         }
-        if (!ok) {
+        if (!ok && gVerbose) {
             std::cerr << "[WARN] Part " << i << " не удалось разместить – пропускаю\n";
         }
     }
@@ -1286,7 +1338,8 @@ static void printHelp(const char* exe){
              << "  --cand N          Candidate positions per part (default 1000)\n"
             << "  --nfp N           NFPs per part (default 200)\n"
             << "  --overlap N       Overlap checks per part (default 500)\n"
-            << "  --time N          Time limit per part in seconds (default 2.0)\n";
+            << "  --time N          Time limit per part in seconds (default 2.0)\n"
+            << "  -v, --verbose     Enable verbose output\n";
 }
 
 // Parse command line arguments
@@ -1310,6 +1363,8 @@ static CLI parse(int ac, char** av){
             c.out = av[++i];
         }else if(a=="-j"||a=="--join-segments"){
             c.joinSegments = true;
+        }else if(a=="-v"||a=="--verbose"){
+            c.verbose = true;
         }else if(a=="--cand"){
             if(i+1>=ac) throw std::runtime_error("missing value for --cand");
             c.cand_limit = std::stoi(av[++i]);
@@ -1576,7 +1631,8 @@ std::vector<Place> genetic_nesting(
         for (auto& child : children)
             next.push_back(std::move(child));
         pop = std::move(next);
-        std::cerr << "[GA] Generation " << gen+1 << " best area: " << pop[0].fitness << " mm2, placed: " << pop[0].layout.size() << "/" << n << "\n";
+        if(gVerbose)
+            std::cerr << "[GA] Generation " << gen+1 << " best area: " << pop[0].fitness << " mm2, placed: " << pop[0].layout.size() << "/" << n << "\n";
     }
     // Вернуть лучшую раскладку
     return pop[0].layout;
@@ -1592,12 +1648,14 @@ int main(int argc, char* argv[])
 {
     try {
         CLI cli = parse(argc, argv);
-
+        gVerbose = cli.verbose;
+        omp_set_num_threads(1);
         // ─── Debug‑вывод параметров ───────────────────────────────────────────
-        std::cerr << "[PARAMS] Sheet: " << cli.W << "x" << cli.H << " mm\n"
-                  << "         Grid: " << cli.grid << " mm\n"
-                  << "         Rot step: " << cli.rot << "°\n"
-                  << "         Iterations: " << cli.iter << "\n";
+        if(gVerbose)
+            std::cerr << "[PARAMS] Sheet: " << cli.W << "x" << cli.H << " mm\n"
+                      << "         Grid: " << cli.grid << " mm\n"
+                      << "         Rot step: " << cli.rot << "°\n"
+                      << "         Iterations: " << cli.iter << "\n";
 
         // ─── Загрузка деталей из JSON ────────────────────────────────────────
         std::vector<RawPart> parts;
@@ -1635,7 +1693,7 @@ int main(int argc, char* argv[])
                 double area  = computeArea(layout, parts);
                 greedyLayouts[it] = std::move(layout);
                 greedyArea[it]   = area;
-                if (++done % 2 == 0 || done == total_iter)
+                if ((++done % 2 == 0 || done == total_iter) && gVerbose)
                     std::cerr << "[GREEDY] finished " << done << "/" << total_iter << "\n";
             });
         }
@@ -1645,7 +1703,8 @@ int main(int argc, char* argv[])
         int bestGreedyIdx = int(std::min_element(greedyArea.begin(), greedyArea.end()) - greedyArea.begin());
         const auto& seedLayout = greedyLayouts[bestGreedyIdx];
         double bestGreedyArea  = greedyArea[bestGreedyIdx];
-        std::cerr << "[GREEDY] best area " << bestGreedyArea << " mm² (iter " << bestGreedyIdx << ")\n";
+        if(gVerbose)
+            std::cerr << "[GREEDY] best area " << bestGreedyArea << " mm² (iter " << bestGreedyIdx << ")\n";
 
         // ─── Genetic‑улучшение ───────────────────────────────────────────────
         auto gaLayout = genetic_nesting(parts, all_orients,
@@ -1655,7 +1714,8 @@ int main(int argc, char* argv[])
                                         /*pop size  */ 4,
                                         seedLayout);
         double gaArea = computeArea(gaLayout, parts);
-        std::cerr << "[GA]    final area " << gaArea << " mm²\n";
+        if(gVerbose)
+            std::cerr << "[GA]    final area " << gaArea << " mm²\n";
 
         // ─── Выбор окончательного расклада ───────────────────────────────────
         const auto& bestLayout = (gaArea < bestGreedyArea ? gaLayout : seedLayout);

@@ -133,15 +133,11 @@ namespace std {
 // --- Global overlap cache ---
 static std::unordered_map<OverlapKey, bool> overlapCache;
 static std::deque<OverlapKey> overlapOrder;
-static std::array<std::mutex,64> overlapCacheMutexes;
-static std::mutex overlapOrderMutex;
+static std::mutex overlapMutex;
 constexpr size_t OVERLAP_CACHE_MAX = 20000;
-static std::unordered_map<Key, Paths64> gNfpCache;
-static std::mutex gNfpMutex;
-std::mutex result_mutex;
-std::mutex output_mutex;
-std::mutex nfp_mutex;
 std::unordered_map<Key, Paths64> sharedNFP;
+std::mutex nfp_mutex;
+std::mutex output_mutex;
 constexpr double SCALE = 1e4;
 constexpr int DEFAULT_ROT_STEP = 10;
 constexpr double TOL_MM = 1.0;       
@@ -972,8 +968,8 @@ static std::vector<std::vector<Orient>> makeOrient(const std::vector<RawPart>& p
 static const Paths64& nfp(
     const Orient& A, const Orient& B,
     std::unordered_map<Key,Paths64>& localNFP,
-    std::unordered_map<Key,Paths64>& gNfpCache,
-    std::mutex& gNfpMutex)
+    std::unordered_map<Key,Paths64>& globalCache,
+    std::mutex& globalMutex)
 {
     Key k = kfn(A.id, A.ang, B.id, B.ang);
     auto it = localNFP.find(k);
@@ -981,9 +977,9 @@ static const Paths64& nfp(
 
     // 1) Пробуем взять из глобального без блокировки
     {
-        std::lock_guard<std::mutex> lock(gNfpMutex);
-        auto git = gNfpCache.find(k);
-        if(git != gNfpCache.end()) {
+        std::lock_guard<std::mutex> lock(globalMutex);
+        auto git = globalCache.find(k);
+        if(git != globalCache.end()) {
             localNFP[k] = git->second;
             return localNFP[k];
         }
@@ -1004,8 +1000,8 @@ static const Paths64& nfp(
 
     // 3) Записываем результат под замком
     {
-        std::lock_guard<std::mutex> lock(gNfpMutex);
-        gNfpCache.emplace(k, res);
+        std::lock_guard<std::mutex> lock(globalMutex);
+        globalCache.emplace(k, res);
     }
     localNFP.emplace(k, res);
     return localNFP[k];
@@ -1217,9 +1213,8 @@ static std::vector<Place> greedy(
 
                         bool ov = false;
                         bool found = false;
-                        size_t idx_mutex = std::hash<OverlapKey>{}(key) & 63;
                         {
-                            std::lock_guard<std::mutex> lock(overlapCacheMutexes[idx_mutex]);
+                            std::lock_guard<std::mutex> lock(overlapMutex);
                             auto it = overlapCache.find(key);
                             if (it != overlapCache.end()) {
                                 ov = it->second;
@@ -1228,20 +1223,13 @@ static std::vector<Place> greedy(
                         }
                         if (!found) {
                             ov = overlap(ps, moved);
-                            {
-                                std::lock_guard<std::mutex> lock(overlapCacheMutexes[idx_mutex]);
-                                overlapCache[key] = ov;
-                            }
-                            {
-                                std::lock_guard<std::mutex> lk(overlapOrderMutex);
-                                overlapOrder.push_back(key);
-                                if (overlapOrder.size() > OVERLAP_CACHE_MAX) {
-                                    OverlapKey old = overlapOrder.front();
-                                    overlapOrder.pop_front();
-                                    size_t idx_old = std::hash<OverlapKey>{}(old) & 63;
-                                    std::lock_guard<std::mutex> lock2(overlapCacheMutexes[idx_old]);
-                                    overlapCache.erase(old);
-                                }
+                            std::lock_guard<std::mutex> lock(overlapMutex);
+                            overlapCache[key] = ov;
+                            overlapOrder.push_back(key);
+                            if (overlapOrder.size() > OVERLAP_CACHE_MAX) {
+                                OverlapKey old = overlapOrder.front();
+                                overlapOrder.pop_front();
+                                overlapCache.erase(old);
                             }
                         }
 

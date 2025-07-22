@@ -13,7 +13,8 @@ if __name__ == "__main__":
         usage()
 
     # --- добавляем список известных флагов, которые прокидываем в nest.exe ---
-    allowed_flags = {"-v", "--verbose", "-j", "--join-segments"}  # можно дополнять
+    allowed_flags = {"-v", "--verbose", "-j", "--join-segments",
+                     "--pop", "--gen", "--runs", "--polish", "--strategy"}
 
     s_idx = sys.argv.index("-s")
     try:
@@ -43,7 +44,14 @@ if __name__ == "__main__":
                     i += 1
             elif arg in allowed_flags:
                 nest_flags.append(arg)
-                i += 1
+                if arg.startswith('--') and arg not in ("-v", "--verbose", "-j", "--join-segments"):
+                    if i + 1 < len(sys.argv):
+                        nest_flags.append(sys.argv[i+1])
+                        i += 2
+                    else:
+                        usage()
+                else:
+                    i += 1
             else:
                 # Файл
                 if ":" in arg:
@@ -94,3 +102,9 @@ if __name__ == "__main__":
     print("[PY] RUN:", " ".join(nest_cmd))
     subprocess.check_call(nest_cmd)
     print("[PY] Success!")
+    try:
+        import pdf_report
+        pdf_report.generate_report("lay.csv", "nest_report.pdf")
+        print("[PY] PDF saved to nest_report.pdf")
+    except Exception as e:
+        print("[PY] PDF generation failed", e)

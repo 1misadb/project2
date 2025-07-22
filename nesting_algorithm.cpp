@@ -151,7 +151,12 @@ struct CLI{
     std::vector<int> nums;
     int num = 1;
     bool joinSegments = false;
-    int iter = 1; 
+    int iter = 1;
+    int runs = 1;
+    int generations = 50;
+    int pop_size = 50;
+    int polish = 0;
+    std::string strategy = "area";
     int cand_limit = 2000;
     int nfp_limit = 20000;
     int overlap_limit = 20000;
@@ -269,7 +274,13 @@ static Paths64 movePaths(const Paths64& src, int64_t dx, int64_t dy){
 }
 
 // ───────── DXF mini loader ─────────
-struct RawPart{ Paths64 rings; double area=0; int id=0; Paths64 holes; };
+struct RawPart{
+    Paths64 rings;
+    double area = 0;
+    double perimeter = 0;
+    int id = 0;
+    Paths64 holes;
+};
 
 // New raw entity representation from DXF
 struct RawEntity{
@@ -893,6 +904,7 @@ static std::vector<RawPart> loadPartsFromJson(const std::string& filename)
         }
 
         p.area = std::abs(Area(p.rings[0])) / (SCALE * SCALE);
+        p.perimeter = pathLength(p.rings[0]);
         return p;
     };
 
@@ -920,10 +932,6 @@ static std::vector<RawPart> loadPartsFromJson(const std::string& filename)
             parts.push_back(std::move(part));
         }
     }
-    // Сортировка по убыванию площади
-    std::sort(parts.begin(), parts.end(), [](const RawPart& a, const RawPart& b) {
-        return a.area > b.area;
-    });
     return parts;
 }
 
@@ -1042,17 +1050,17 @@ static std::vector<Point64> candidates(const std::vector<Paths64>& placed,
 // Place a set of parts onto the sheet using a simple greedy algorithm
 struct Place{int id; double x,y; int ang;};
 
-static double computeArea(const std::vector<Place>& layout, const std::vector<RawPart>& parts){
-    if(layout.empty()) return 0.0;
-    Paths64 all;
-    for(const auto& pl : layout){
-        double rad = pl.ang * M_PI / 180.0;
-        auto r = rot(parts[pl.id].rings, sin(rad), cos(rad));
-        Paths64 moved = movePaths(r, I64mm(pl.x), I64mm(pl.y));
-        all.insert(all.end(), moved.begin(), moved.end());
-    }
-    Rect64 bb = getBBox(all);
-    return Dbl(bb.right - bb.left) * Dbl(bb.top - bb.bottom);
+struct LayoutStats{ double bboxArea=0.0; double placedArea=0.0; };
+
+static LayoutStats computeStats(const std::vector<Place>& layout, const std::vector<RawPart>& parts){
+    LayoutStats st{}; if(layout.empty()) return st; Paths64 all; for(const auto& pl:layout){
+        double rad=pl.ang*M_PI/180.0; auto r=rot(parts[pl.id].rings,sin(rad),cos(rad));
+        Paths64 moved=movePaths(r,I64mm(pl.x),I64mm(pl.y)); all.insert(all.end(),moved.begin(),moved.end()); }
+    Rect64 bb=getBBox(all); st.bboxArea=Dbl(bb.right-bb.left)*Dbl(bb.top-bb.bottom);
+    auto uni=Union(all,FillRule::NonZero); st.placedArea=areaMM2(uni); return st; }
+
+static double computeArea(const std::vector<Place>& layout,const std::vector<RawPart>& parts){
+    return computeStats(layout, parts).bboxArea;
 }
 const int MAX_OVERLAP_CHECKS = 100;          // Максимум overlap-проверок по умолчанию
 const double MAX_TIME_PER_PART = 0.5;        // Секунд на одну деталь по умолчанию
@@ -1368,6 +1376,21 @@ static CLI parse(int ac, char** av){
         }else if(a=="-i"||a=="--iter"){
             if(i+1>=ac) throw std::runtime_error("missing value for --iter");
             c.iter = std::stoi(av[++i]);
+        }else if(a=="--runs"){
+            if(i+1>=ac) throw std::runtime_error("missing value for --runs");
+            c.runs = std::stoi(av[++i]);
+        }else if(a=="--pop"){
+            if(i+1>=ac) throw std::runtime_error("missing value for --pop");
+            c.pop_size = std::stoi(av[++i]);
+        }else if(a=="--gen"){
+            if(i+1>=ac) throw std::runtime_error("missing value for --gen");
+            c.generations = std::stoi(av[++i]);
+        }else if(a=="--polish"){
+            if(i+1>=ac) throw std::runtime_error("missing value for --polish");
+            c.polish = std::stoi(av[++i]);
+        }else if(a=="--strategy"){
+            if(i+1>=ac) throw std::runtime_error("missing value for --strategy");
+            c.strategy = av[++i];
         }else if(a=="-g"||a=="--grid"){
             if(i+1>=ac) throw std::runtime_error("missing value for --grid");
             c.grid = std::stod(av[++i]);
@@ -1549,6 +1572,41 @@ double evaluate_genome(
     return area;
 }
 
+static std::vector<Place> local_search(const std::vector<Place>& layout,
+                                       const std::vector<RawPart>& parts,
+                                       const std::vector<std::vector<Orient>>& all_orients,
+                                       double W, double H, double grid,
+                                       size_t max_passes){
+    auto best = layout;
+    double bestA = computeArea(best, parts);
+    for(size_t pass=0; pass<max_passes; ++pass){
+        bool improved=false;
+        for(size_t i=0;i<best.size();++i){
+            Place orig = best[i];
+            Place bestLocal = orig;
+            double localBest = bestA;
+            for(const auto& o : all_orients[orig.id]){
+                for(int dx=-1;dx<=1;++dx) for(int dy=-1;dy<=1;++dy){
+                    double nx=orig.x+dx*grid, ny=orig.y+dy*grid;
+                    if(nx<0||ny<0||nx>W||ny>H) continue;
+                    Place cand{orig.id,nx,ny,o.ang};
+                    auto temp=best; temp[i]=cand; bool clash=false;
+                    for(size_t j=0;j<temp.size();++j){ if(i==j) continue; 
+                        double r1=cand.ang*M_PI/180.0; auto p1=movePaths(rot(parts[cand.id].rings,sin(r1),cos(r1)),I64mm(cand.x),I64mm(cand.y));
+                        double r2=temp[j].ang*M_PI/180.0; auto p2=movePaths(rot(parts[temp[j].id].rings,sin(r2),cos(r2)),I64mm(temp[j].x),I64mm(temp[j].y));
+                        if(overlap(p1,p2)){clash=true;break;} }
+                    if(clash) continue;
+                    double a=computeArea(temp, parts);
+                    if(a<localBest){localBest=a; bestLocal=cand;}
+                }
+            }
+            if(localBest < bestA){ best[i]=bestLocal; bestA=localBest; improved=true; }
+        }
+        if(!improved) break;
+    }
+    return best;
+}
+
 
 // --- Генетический алгоритм основной цикл ---
 // Добавлен параметр seed_layout для передачи стартовой особи
@@ -1697,9 +1755,11 @@ int main(int argc, char* argv[])
         auto gaLayout = genetic_nesting(parts, all_orients,
                                         cli.W, cli.H, cli.grid,
                                         sharedNFP, nfp_mutex, &cli,
-                                        /*generations*/ 4,
-                                        /*pop size  */ 4,
+                                        cli.generations,
+                                        cli.pop_size,
                                         seedLayout);
+        if(cli.polish>0)
+            gaLayout = local_search(gaLayout, parts, all_orients, cli.W, cli.H, cli.grid, cli.polish);
         double gaArea = computeArea(gaLayout, parts);
         if(gVerbose)
             std::cerr << "[GA]    final area " << gaArea << " mm²\n";
@@ -1709,10 +1769,15 @@ int main(int argc, char* argv[])
 
         // ─── Экспорт результатов ─────────────────────────────────────────────
         std::ofstream csv(cli.out);
-        csv << "part,x_mm,y_mm,angle\n";
+        LayoutStats st = computeStats(bestLayout, parts);
+        double fill = st.placedArea/(cli.W*cli.H)*100.0;
+        double waste = cli.W*cli.H - st.placedArea;
+        csv << "run,strategy,part,x_mm,y_mm,angle,fill_pct,waste_mm2\n";
         for (const auto& pl : bestLayout)
-            csv << pl.id << ',' << std::fixed << std::setprecision(3)
-                << pl.x << ',' << pl.y << ',' << pl.ang << "\n";
+            csv << 0 << ',' << cli.strategy << ',' << pl.id << ','
+                << std::fixed << std::setprecision(3)
+                << pl.x << ',' << pl.y << ',' << pl.ang << ','
+                << fill << ',' << waste << "\n";
         std::cout << "placed " << bestLayout.size() << '/' << parts.size()
                   << "  ->  " << cli.out << "\n";
 

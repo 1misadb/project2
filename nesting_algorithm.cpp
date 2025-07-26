@@ -147,6 +147,7 @@ struct CLI{
     int rot = DEFAULT_ROT_STEP;
     double grid = 0.01;
     std::string out = "layout.csv";
+    std::string dxf = "layout.dxf"; // output DXF file
     std::vector<std::string> files;
     std::vector<int> nums;
     int num = 1;
@@ -162,6 +163,8 @@ struct CLI{
     int overlap_limit = 20000;
     double time_limit = 3000.0;
     bool verbose = false;
+    int run = 0;            // run index for multi strategy runs
+    bool fill_gaps = false; // enable gap nesting
 };
 // base tolerance in mm
 inline int64_t tol_mm() { return llround(TOL_MM * SCALE); }
@@ -1327,6 +1330,7 @@ static void printHelp(const char* exe){
               << "  -s, --sheet WxH    Sheet size in mm\n"
              << "  -r, --rot N       Rotation step in degrees (default 45)\n"
              << "  -o, --out FILE    Output CSV file (default layout.csv)\n"
+             << "  --dxf FILE        Output DXF layout (default layout.dxf)\n"
              << "  -j, --join-segments  Join broken segments into loops\n"
              << "  -i, --iter N      Number of random iterations (default 1)\n"
              << "  -g, --grid N      Grid step in mm (default 10)\n"
@@ -1335,7 +1339,9 @@ static void printHelp(const char* exe){
             << "  --nfp N           NFPs per part (default 200)\n"
             << "  --overlap N       Overlap checks per part (default 500)\n"
             << "  --time N          Time limit per part in seconds (default 2.0)\n"
-            << "  -v, --verbose     Enable verbose output\n";
+             << "  -v, --verbose     Enable verbose output\n"
+             << "  --run N           Run index for multi runs\n"
+             << "  --fill-gaps       Enable gap nesting\n";
 }
 
 // Parse command line arguments
@@ -1354,12 +1360,15 @@ static CLI parse(int ac, char** av){
             if(i+1>=ac) throw std::runtime_error("missing value for --rot");
             c.rot = std::stoi(av[++i]);
             if(c.rot <= 0 || c.rot > 360) throw std::runtime_error("--rot must be in 1..360");
-        }else if(a=="-o"||a=="--out"){
+        }else if(a=="-o"||a=="--out"){ 
             if(i+1>=ac) throw std::runtime_error("missing value for --out");
             c.out = av[++i];
-        }else if(a=="-j"||a=="--join-segments"){
+        }else if(a=="--dxf"){ 
+            if(i+1>=ac) throw std::runtime_error("missing value for --dxf");
+            c.dxf = av[++i];
+        }else if(a=="-j"||a=="--join-segments"){ 
             c.joinSegments = true;
-        }else if(a=="-v"||a=="--verbose"){
+        }else if(a=="-v"||a=="--verbose"){ 
             c.verbose = true;
         }else if(a=="--cand"){
             if(i+1>=ac) throw std::runtime_error("missing value for --cand");
@@ -1388,14 +1397,19 @@ static CLI parse(int ac, char** av){
         }else if(a=="--polish"){
             if(i+1>=ac) throw std::runtime_error("missing value for --polish");
             c.polish = std::stoi(av[++i]);
-        }else if(a=="--strategy"){
-            if(i+1>=ac) throw std::runtime_error("missing value for --strategy");
+        }else if(a=="--strategy"){ 
+            if(i+1>=ac) throw std::runtime_error("missing value for --strategy"); 
             c.strategy = av[++i];
-        }else if(a=="-g"||a=="--grid"){
+        }else if(a=="-g"||a=="--grid"){ 
             if(i+1>=ac) throw std::runtime_error("missing value for --grid");
             c.grid = std::stod(av[++i]);
             if(c.grid <= 0) throw std::runtime_error("--grid must be > 0");
-        }else if(a=="-n"||a=="--num"){
+        }else if(a=="--run"){ 
+            if(i+1>=ac) throw std::runtime_error("missing value for --run");
+            c.run = std::stoi(av[++i]);
+        }else if(a=="--fill-gaps"){ 
+            c.fill_gaps = true;
+        }else if(a=="-n"||a=="--num"){ 
             if(c.grid < 1){
                 std::cerr << "[WARN] grid too small, clamped to 1mm" << std::endl;
                 c.grid = 1;
@@ -1579,6 +1593,7 @@ static std::vector<Place> local_search(const std::vector<Place>& layout,
                                        size_t max_passes){
     auto best = layout;
     double bestA = computeArea(best, parts);
+    double step = grid*2.0;
     for(size_t pass=0; pass<max_passes; ++pass){
         bool improved=false;
         for(size_t i=0;i<best.size();++i){
@@ -1587,11 +1602,11 @@ static std::vector<Place> local_search(const std::vector<Place>& layout,
             double localBest = bestA;
             for(const auto& o : all_orients[orig.id]){
                 for(int dx=-1;dx<=1;++dx) for(int dy=-1;dy<=1;++dy){
-                    double nx=orig.x+dx*grid, ny=orig.y+dy*grid;
+                    double nx=orig.x+dx*step, ny=orig.y+dy*step;
                     if(nx<0||ny<0||nx>W||ny>H) continue;
                     Place cand{orig.id,nx,ny,o.ang};
                     auto temp=best; temp[i]=cand; bool clash=false;
-                    for(size_t j=0;j<temp.size();++j){ if(i==j) continue; 
+                    for(size_t j=0;j<temp.size();++j){ if(i==j) continue;
                         double r1=cand.ang*M_PI/180.0; auto p1=movePaths(rot(parts[cand.id].rings,sin(r1),cos(r1)),I64mm(cand.x),I64mm(cand.y));
                         double r2=temp[j].ang*M_PI/180.0; auto p2=movePaths(rot(parts[temp[j].id].rings,sin(r2),cos(r2)),I64mm(temp[j].x),I64mm(temp[j].y));
                         if(overlap(p1,p2)){clash=true;break;} }
@@ -1602,9 +1617,68 @@ static std::vector<Place> local_search(const std::vector<Place>& layout,
             }
             if(localBest < bestA){ best[i]=bestLocal; bestA=localBest; improved=true; }
         }
-        if(!improved) break;
+        // pairwise swap search
+        for(size_t a=0;a<best.size();++a) for(size_t b=a+1;b<best.size();++b){
+            auto temp=best; std::swap(temp[a], temp[b]);
+            double aA=computeArea(temp, parts);
+            if(aA < bestA){ best=temp; bestA=aA; improved=true; }
+        }
+        if(!improved){
+            if(step<=grid/2) break;
+            step/=2.0;
+        }
     }
     return best;
+}
+
+// --- Gap fill: try to place remaining parts into free areas ---
+static std::vector<Place> fillGaps(std::vector<Place> layout,
+                                   const std::vector<RawPart>& parts,
+                                   const std::vector<std::vector<Orient>>& all_orients,
+                                   double W, double H, double grid){
+    std::set<int> placedIds;
+    for(const auto& pl: layout) placedIds.insert(pl.id);
+
+    Paths64 placedPaths;
+    for(const auto& pl: layout){
+        double rad = pl.ang*M_PI/180.0;
+        Paths64 r = movePaths(rot(parts[pl.id].rings,sin(rad),cos(rad)),I64mm(pl.x),I64mm(pl.y));
+        placedPaths.insert(placedPaths.end(), r.begin(), r.end());
+    }
+    Path64 sheet;
+    sheet.push_back(Point64(int64_t(0),int64_t(0)));
+    sheet.push_back(Point64(I64mm(W),int64_t(0)));
+    sheet.push_back(Point64(I64mm(W),I64mm(H)));
+    sheet.push_back(Point64(int64_t(0),I64mm(H)));
+    sheet.push_back(Point64(int64_t(0),int64_t(0)));
+    Paths64 free = Difference(Paths64{sheet}, Union(placedPaths,FillRule::NonZero), FillRule::NonZero);
+
+    for(size_t pid=0; pid<parts.size(); ++pid){
+        if(placedIds.count(pid)) continue;
+        const auto& oris = all_orients[pid];
+        bool done=false;
+        for(const auto& gap : free){
+            Rect64 gb = getBBox(Paths64{gap});
+            for(const auto& o: oris){
+                if(o.bb.right-o.bb.left > gb.right-gb.left ||
+                   o.bb.top-o.bb.bottom > gb.top-gb.bottom) continue;
+                Place pl{(int)pid, Dbl(gb.left), Dbl(gb.bottom), o.ang};
+                Paths64 moved = movePaths(o.poly, gb.left, gb.bottom);
+                bool clash=false;
+                for(const auto& pp: placedPaths){
+                    if(overlap(Paths64{pp}, moved)){ clash=true; break; }
+                }
+                if(!clash){
+                    layout.push_back(pl);
+                    placedPaths.insert(placedPaths.end(), moved.begin(), moved.end());
+                    free = Difference(Paths64{sheet}, Union(placedPaths,FillRule::NonZero), FillRule::NonZero);
+                    done=true; break;
+                }
+            }
+            if(done) break;
+        }
+    }
+    return layout;
 }
 
 
@@ -1765,7 +1839,9 @@ int main(int argc, char* argv[])
             std::cerr << "[GA]    final area " << gaArea << " mm²\n";
 
         // ─── Выбор окончательного расклада ───────────────────────────────────
-        const auto& bestLayout = (gaArea < bestGreedyArea ? gaLayout : seedLayout);
+        auto bestLayout = (gaArea < bestGreedyArea ? gaLayout : seedLayout);
+        if(cli.fill_gaps)
+            bestLayout = fillGaps(bestLayout, parts, all_orients, cli.W, cli.H, cli.grid);
 
         // ─── Экспорт результатов ─────────────────────────────────────────────
         std::ofstream csv(cli.out);
@@ -1774,15 +1850,14 @@ int main(int argc, char* argv[])
         double waste = cli.W*cli.H - st.placedArea;
         csv << "run,strategy,part,x_mm,y_mm,angle,fill_pct,waste_mm2\n";
         for (const auto& pl : bestLayout)
-            csv << 0 << ',' << cli.strategy << ',' << pl.id << ','
+            csv << cli.run << ',' << cli.strategy << ',' << pl.id << ','
                 << std::fixed << std::setprecision(3)
                 << pl.x << ',' << pl.y << ',' << pl.ang << ','
                 << fill << ',' << waste << "\n";
         std::cout << "placed " << bestLayout.size() << '/' << parts.size()
                   << "  ->  " << cli.out << "\n";
-
-        ExportPlacedToDXF("layout.dxf", parts, bestLayout, cli.W, cli.H);
-        std::cout << "DXF exported to layout.dxf\n";
+        ExportPlacedToDXF(cli.dxf, parts, bestLayout, cli.W, cli.H);
+        std::cout << "DXF exported to " << cli.dxf << "\n";
         return 0;
     }
     catch (const std::exception& e) {

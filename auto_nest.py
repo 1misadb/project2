@@ -1,6 +1,7 @@
 import subprocess
 import sys
 import os
+
 sys.stdout.reconfigure(encoding='utf-8')
 
 def usage():
@@ -8,11 +9,16 @@ def usage():
     print("  python auto_nest.py -s 2000x2000 [-i N] [--флаги] part1.dxf:3 part2.dxf:1 ...")
     sys.exit(1)
 
+def _run(t):
+    cmd = t[0]
+    print("[PY] RUN:", " ".join(cmd))
+    subprocess.check_call(cmd)
+    return t[1], t[2], t[3], t[4]
+
 if __name__ == "__main__":
     if "-s" not in sys.argv or len(sys.argv) < 4:
         usage()
 
-    # --- добавляем список известных флагов, которые прокидываем в nest.exe ---
     allowed_flags = {"-v", "--verbose", "-j", "--join-segments",
                      "--pop", "--gen", "--polish", "--fill-gaps"}
 
@@ -103,7 +109,6 @@ if __name__ == "__main__":
         json_files.append(json_out)
 
     nest_binary = "nest.exe" if os.name == "nt" else "./nest"
-
     tasks = []
     for strat in strategies:
         for r in range(runs):
@@ -122,12 +127,6 @@ if __name__ == "__main__":
             tasks.append((cmd, out_csv, out_dxf, strat, r))
 
     from multiprocessing import Pool
-    def _run(t):
-        cmd=t[0]
-        print("[PY] RUN:", " ".join(cmd))
-        subprocess.check_call(cmd)
-        return t[1], t[2], t[3], t[4]
-
     with Pool() as pool:
         results = pool.map(_run, tasks)
 

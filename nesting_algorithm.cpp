@@ -47,8 +47,8 @@
 #include <json.hpp>
 double gUnit = 1.0;
 bool gVerbose = false;
-double gKerf = 0.0;
-double gGap = 0.0;
+extern double gKerf;
+extern double gGap;
 using namespace Clipper2Lib;
 
 static std::string trim(const std::string& s) {
@@ -262,26 +262,7 @@ static inline double areaMM2(const Paths64& p)
     return std::abs(Area(p)) / (SCALE * SCALE);
 }
 
-// Test for polygon overlap
-bool overlap(const Paths64& a, const Paths64& b) {
-    double delta = (gKerf * 0.5 + gGap) * SCALE;
-    Paths64 ea = InflatePaths(a, delta, JoinType::Miter, EndType::Polygon);
-    Paths64 eb = InflatePaths(b, delta, JoinType::Miter, EndType::Polygon);
-    Paths64 ua = Union(ea, FillRule::NonZero);
-    Paths64 ub = Union(eb, FillRule::NonZero);
-    Paths64 isect = Intersect(ua, ub, FillRule::NonZero);
-    return std::abs(Area(isect)) > 0.0;
-}
-// Translate polygon set by (dx,dy)
-static Paths64 movePaths(const Paths64& src, int64_t dx, int64_t dy){
-    Paths64 out; out.reserve(src.size());
-    for(const auto& path: src){
-        Path64 p; p.reserve(path.size());
-        for(auto pt: path) p.push_back({pt.x + dx, pt.y + dy});
-        out.push_back(std::move(p));
-    }
-    return out;
-}
+#include "geometry.h"
 
 // ───────── DXF mini loader ─────────
 struct RawPart{

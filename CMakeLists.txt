@@ -8,12 +8,16 @@ add_library(clipper3
     clipper3/src/clipper.rectclip.cpp
 )
 target_include_directories(clipper3 PUBLIC clipper3)
+add_library(geometry geometry.cpp)
+target_include_directories(geometry PUBLIC . clipper3)
+target_link_libraries(geometry PUBLIC clipper3)
+
 add_executable(nest
     nesting_algorithm.cpp
 )
 target_include_directories(nest PRIVATE . clipper3)
-target_link_libraries(nest PRIVATE clipper3 TBB::tbb)
+target_link_libraries(nest PRIVATE geometry TBB::tbb)
 
 add_executable(test_overlap tests/test_overlap.cpp)
 target_include_directories(test_overlap PRIVATE . clipper3)
-target_link_libraries(test_overlap PRIVATE clipper3 TBB::tbb)
+target_link_libraries(test_overlap PRIVATE geometry TBB::tbb)

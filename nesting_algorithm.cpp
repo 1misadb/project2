@@ -851,14 +851,37 @@ static std::vector<RawPart> entitiesToParts(const std::vector<RawEntity>& ents)
 // Load parts from JSON file produced by extract_polylines.py
 static std::vector<RawPart> loadPartsFromJson(const std::string& filename)
 {
+    std::cerr << "[JSON] parsing " << filename << "\n";
     std::ifstream fin(filename);
-    if(!fin)
-        throw std::runtime_error("open "+filename);
+    if(!fin){
+        std::cerr << "[WARN] cannot open " << filename << "\n";
+        return {};
+    }
+
+    std::stringstream buf; buf << fin.rdbuf();
+    std::string data = buf.str();
+    auto pos = data.find_first_not_of(" \t\r\n");
+    if(pos == std::string::npos){
+        std::cerr << "[WARN] empty file " << filename << "\n";
+        return {};
+    }
+    char first = data[pos];
+    if(first != '[' && first != '{'){
+        std::cerr << "[WARN] skipping non JSON " << filename << "\n";
+        return {};
+    }
 
     nlohmann::json j;
-    fin >> j;
-    if(!j.is_array())
-        throw std::runtime_error("invalid JSON format in "+filename);
+    try{
+        j = nlohmann::json::parse(data);
+    }catch(const std::exception& e){
+        std::cerr << "[ERR] parse " << filename << ": " << e.what() << "\n";
+        return {};
+    }
+    if(!j.is_array()){
+        std::cerr << "[ERR] invalid JSON format in " << filename << "\n";
+        return {};
+    }
 
     auto parse_one = [](const nlohmann::json& arr)->RawPart {
         RawPart p;
@@ -1362,7 +1385,13 @@ static CLI parse(int ac, char** av){
     std::string cfg_path = result["config"].as<std::string>();
     nlohmann::json cfg;
     std::ifstream cf(cfg_path);
-    if(cf) cf >> cfg;
+    if(cf){
+        try{
+            cf >> cfg;
+        }catch(const std::exception& e){
+            std::cerr << "[WARN] config " << cfg_path << ": " << e.what() << "\n";
+        }
+    }
 
     auto sheet = cfg.value("sheet", std::string());
     if(result.count("sheet")) sheet = result["sheet"].as<std::string>();

@@ -84,6 +84,14 @@ def main(argv=None):
         if repeat > 1:
             cmd.append(f"repeat={repeat}")
         subprocess.check_call(cmd)
+
+        if not json_out.exists() or json_out.stat().st_size == 0:
+            raise RuntimeError(f"JSON output {json_out} missing or empty")
+        with open(json_out, "r", encoding="utf-8") as chk:
+            first = chk.read(1)
+            if first != "[":
+                raise RuntimeError(f"Invalid JSON produced: {json_out}")
+        print(f"[PY] JSON generated: {json_out}")
         json_files.append(str(json_out))
 
     nest_binary = "nest.exe" if os.name == "nt" else "./nest"

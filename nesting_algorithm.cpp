@@ -45,6 +45,13 @@
 #include "clipper3/clipper.h"
 #include "clipper3/clipper.minkowski.h"
 #include <json.hpp>
+#include <spdlog/spdlog.h>
+#if defined(__clang__)
+# define GUARDED_BY(x) __attribute__((guarded_by(x)))
+#else
+# define GUARDED_BY(x)
+#endif
+#include "lru_cache.h"
 double gUnit = 1.0;
 bool gVerbose = false;
 extern double gKerf;
@@ -135,12 +142,11 @@ namespace std {
 
 // --- Global overlap cache ---
 #include <tbb/concurrent_unordered_map.h>
-static tbb::concurrent_unordered_map<OverlapKey, bool> overlapCache;
-static std::deque<OverlapKey> overlapOrder;
+static tbb::concurrent_unordered_map<OverlapKey, bool> overlapCache GUARDED_BY(overlapMutex);
+static std::deque<OverlapKey> overlapOrder GUARDED_BY(overlapMutex);
 static std::mutex overlapMutex;
 constexpr size_t OVERLAP_CACHE_MAX = 20000;
-std::unordered_map<Key, Paths64> sharedNFP;
-std::mutex nfp_mutex;
+static LRUCache<Key, Paths64> sharedNFP(20000);
 std::mutex output_mutex;
 constexpr double SCALE = 1e4;
 constexpr int DEFAULT_ROT_STEP = 10;
@@ -375,10 +381,15 @@ static bool parseLine(DXFReader& rd, Path64& out, int seg) {
     while (rd.next()) {
         if (rd.code == "0") { rd.push(); break; }
 
-        if (rd.code == "10") { x1 = std::stod(rd.value); have_x1 = true; }
-        else if (rd.code == "20") { y1 = std::stod(rd.value); have_y1 = true; }
-        else if (rd.code == "11") { x2 = std::stod(rd.value); have_x2 = true; }
-        else if (rd.code == "21") { y2 = std::stod(rd.value); have_y2 = true; }
+        try {
+            if (rd.code == "10") { x1 = std::stod(rd.value); have_x1 = true; }
+            else if (rd.code == "20") { y1 = std::stod(rd.value); have_y1 = true; }
+            else if (rd.code == "11") { x2 = std::stod(rd.value); have_x2 = true; }
+            else if (rd.code == "21") { y2 = std::stod(rd.value); have_y2 = true; }
+        } catch(const std::exception& e) {
+            std::cerr << "seg " << seg << " LINE parse error: " << e.what() << "\n";
+            return false;
+        }
         // остальные коды просто игнорируем!
     }
 
@@ -990,21 +1001,17 @@ static std::vector<std::vector<Orient>> makeOrient(const std::vector<RawPart>& p
 static const Paths64& nfp(
     const Orient& A, const Orient& B,
     std::unordered_map<Key,Paths64>& localNFP,
-    std::unordered_map<Key,Paths64>& globalCache,
-    std::mutex& globalMutex)
+    LRUCache<Key,Paths64>& globalCache)
 {
     Key k = kfn(A.id, A.ang, B.id, B.ang);
     auto it = localNFP.find(k);
     if(it != localNFP.end()) return it->second;
 
-    // 1) Пробуем взять из глобального без блокировки
-    {
-        std::lock_guard<std::mutex> lock(globalMutex);
-        auto git = globalCache.find(k);
-        if(git != globalCache.end()) {
-            localNFP[k] = git->second;
-            return localNFP[k];
-        }
+    // 1) try global cache
+    Paths64 cached;
+    if(globalCache.get(k, cached)) {
+        localNFP[k] = cached;
+        return localNFP[k];
     }
 
     // 2) Считаем NFP без блокировки
@@ -1019,12 +1026,14 @@ static const Paths64& nfp(
         b = { {bb.left, bb.bottom}, {bb.right, bb.bottom}, {bb.right, bb.top}, {bb.left, bb.top}, {bb.left, bb.bottom} };
     }
     Paths64 res = MinkowskiSum(a, b, true);
-
-    // 3) Записываем результат под замком
-    {
-        std::lock_guard<std::mutex> lock(globalMutex);
-        globalCache.emplace(k, res);
+    // kerf compensation: expand NFP by 0.1mm
+    const double kerf_mm = 0.1;
+    if(kerf_mm > 0.0) {
+        res = InflatePaths(res, kerf_mm * SCALE, JoinType::Miter, EndType::Polygon);
     }
+
+    // 3) store in global cache
+    globalCache.put(k, res);
     localNFP.emplace(k, res);
     return localNFP[k];
 }
@@ -1088,8 +1097,7 @@ static std::vector<Place> greedy(
     double W, double H, int grid,
     unsigned int seed,
     std::unordered_map<Key, Paths64>& localNFP,
-    std::unordered_map<Key, Paths64>& sharedNFP,
-    std::mutex& nfp_mutex,
+    LRUCache<Key, Paths64>& sharedNFP,
     const CLI* cli_ptr
 ) {
     size_t CAND_LIMIT = 1e6;
@@ -1118,8 +1126,7 @@ static std::vector<Place> greedy(
     for (size_t i = 0; i < ord.size(); ++i) {
         overlap_checks = 0;                      // ① обнулить перед деталью
         auto part_start = std::chrono::steady_clock::now();   // ② время – локально
-        if(gVerbose)
-            std::cerr << "[STEP] Размещаю деталь " << i << " (ID " << ord[i].id << ") ...\n";
+        spdlog::info("Placing part {} / {} (ID {})", i+1, ord.size(), ord[i].id);
         if (ord[i].rings.empty()) {
             std::cerr << "[ERROR] Деталь " << i << " пуста! Пропускаю.\n";
             continue;
@@ -1176,7 +1183,7 @@ static std::vector<Place> greedy(
                 size_t nfp_count = 0;
                 for(const auto& po : placedOrient) {
                     if (cand.size() >= CAND_LIMIT) break;
-                    const Paths64& nfpp = nfp(po, op, localNFP, sharedNFP, nfp_mutex);
+                    const Paths64& nfpp = nfp(po, op, localNFP, sharedNFP);
                     for(const auto& pth : nfpp) {
                         for(const auto& pt : pth) {
                             if (cand.size() >= CAND_LIMIT || nfp_count >= NFP_LIMIT) break;
@@ -1489,6 +1496,34 @@ void ExportPlacedToDXF(const std::string& filename,
     f << "0\nENDSEC\n0\nEOF\n";
 }
 
+void ExportPlacedToSVG(const std::string& filename,
+                       const std::vector<RawPart>& parts,
+                       const std::vector<Place>& placed,
+                       double W, double H)
+{
+    std::ofstream f(filename);
+    f << "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 " << W << ' ' << H << "'>\n";
+    f << "<rect x='0' y='0' width='" << W << "' height='" << H << "' fill='none' stroke='black'/>\n";
+    for (const auto& pl : placed) {
+        const RawPart& part = parts[pl.id];
+        double rad = pl.ang * M_PI / 180.0;
+        double s = sin(rad), c = cos(rad);
+        auto emit = [&](const Path64& ring) {
+            f << "<polyline fill='none' stroke='red' points='";
+            for (const auto& p : ring) {
+                double px = Dbl(p.x); double py = Dbl(p.y);
+                double nx = c*px - s*py + pl.x;
+                double ny = s*px + c*py + pl.y;
+                f << nx << ',' << ny << ' ';
+            }
+            f << "'/>\n";
+        };
+        for (const auto& ring : part.rings) emit(ring);
+        for (const auto& hole : part.holes) emit(hole);
+    }
+    f << "</svg>\n";
+}
+
 // --- Genetic Algorithm Structures ---
 struct Genome {
     std::vector<int> order;      // порядок деталей
@@ -1555,8 +1590,7 @@ double evaluate_genome(
     const std::vector<RawPart>& parts,
     const std::vector<std::vector<Orient>>& all_orients,
     double W, double H, double grid,
-    std::unordered_map<Key, Paths64>& sharedNFP,
-    std::mutex& nfp_mutex,
+    LRUCache<Key, Paths64>& sharedNFP,
     const CLI* cli_ptr
 ) {
     // Собираем перестановку деталей в соответствии с порядком из генома
@@ -1569,7 +1603,7 @@ double evaluate_genome(
 
     // Вызываем greedy с полной таблицей ориентаций (perm_orients)
     std::unordered_map<Key, Paths64> localNFP;
-    auto layout = greedy(perm, perm_orients, W, H, grid, 0, localNFP, sharedNFP, nfp_mutex, cli_ptr);
+    auto layout = greedy(perm, perm_orients, W, H, grid, 0, localNFP, sharedNFP, cli_ptr);
 
     double area = computeArea(layout, perm);
     g.fitness = area;
@@ -1679,8 +1713,7 @@ std::vector<Place> genetic_nesting(
     const std::vector<RawPart>& parts,
     const std::vector<std::vector<Orient>>& all_orients,
     double W, double H, double grid,
-    std::unordered_map<Key, Paths64>& sharedNFP,
-    std::mutex& nfp_mutex,
+    LRUCache<Key, Paths64>& sharedNFP,
     const CLI* cli_ptr,
     int generations = 4,
     int pop_size = 4,
@@ -1712,7 +1745,7 @@ std::vector<Place> genetic_nesting(
             }
             g.angles[i] = ang_idx;
         }
-        evaluate_genome(g, parts, all_orients, W, H, grid, sharedNFP, nfp_mutex, cli_ptr);
+        evaluate_genome(g, parts, all_orients, W, H, grid, sharedNFP, cli_ptr);
         pop[0] = g;
     }
 
@@ -1728,13 +1761,23 @@ std::vector<Place> genetic_nesting(
         // Новое поколение
         std::vector<Genome> children(pop_size - elite);
 
+        auto tournament = [&](std::mt19937& trng) {
+            int best = trng() % pop_size;
+            for(int t=1;t<3;++t){
+                int cand = trng() % pop_size;
+                if(pop[cand].fitness < pop[best].fitness) best = cand;
+            }
+            return best;
+        };
+
         #pragma omp parallel for
         for (int k = 0; k < int(children.size()); ++k) {
-            std::mt19937 thread_rng(rng()); 
-            int i1 = thread_rng() % (pop_size/2), i2 = thread_rng() % (pop_size/2);
+            std::mt19937 thread_rng(rng());
+            int i1 = tournament(thread_rng);
+            int i2 = tournament(thread_rng);
             Genome child = crossover(pop[i1], pop[i2], thread_rng);
             mutate(child, n_orients, thread_rng, 0.2);
-            evaluate_genome(child, parts, all_orients, W, H, grid, sharedNFP, nfp_mutex, cli_ptr);
+            evaluate_genome(child, parts, all_orients, W, H, grid, sharedNFP, cli_ptr);
             children[k] = std::move(child);
         }
 
@@ -1742,8 +1785,8 @@ std::vector<Place> genetic_nesting(
         for (auto& child : children)
             next.push_back(std::move(child));
         pop = std::move(next);
-        if(gVerbose)
-            std::cerr << "[GA] Generation " << gen+1 << " best area: " << pop[0].fitness << " mm2, placed: " << pop[0].layout.size() << "/" << n << "\n";
+        spdlog::info("GA generation {} best area: {} mm2 placed {}/{}",
+                     gen+1, pop[0].fitness, pop[0].layout.size(), n);
     }
     // Вернуть лучшую раскладку
     return pop[0].layout;
@@ -1761,6 +1804,8 @@ int main(int argc, char* argv[])
     try {
         CLI cli = parse(argc, argv);
         gVerbose = cli.verbose;
+        spdlog::set_pattern("[%H:%M:%S] %^%l%$ %v");
+        spdlog::set_level(gVerbose ? spdlog::level::info : spdlog::level::warn);
         // ─── Debug‑вывод параметров ───────────────────────────────────────────
         if(gVerbose)
             std::cerr << "[PARAMS] Sheet: " << cli.W << "x" << cli.H << " mm\n"
@@ -1800,7 +1845,7 @@ int main(int argc, char* argv[])
                                       unsigned(std::chrono::steady_clock::now()
                                                .time_since_epoch().count()) + it);
                 auto layout = greedy(parts, all_orients, cli.W, cli.H, cli.grid,
-                                      seed, localNFP, sharedNFP, nfp_mutex, &cli);
+                                      seed, localNFP, sharedNFP, &cli);
                 double area  = computeArea(layout, parts);
                 greedyLayouts[it] = std::move(layout);
                 greedyArea[it]   = area;
@@ -1820,7 +1865,7 @@ int main(int argc, char* argv[])
         // ─── Genetic‑улучшение ───────────────────────────────────────────────
         auto gaLayout = genetic_nesting(parts, all_orients,
                                         cli.W, cli.H, cli.grid,
-                                        sharedNFP, nfp_mutex, &cli,
+                                        sharedNFP, &cli,
                                         cli.generations,
                                         cli.pop_size,
                                         seedLayout);
@@ -1849,6 +1894,7 @@ int main(int argc, char* argv[])
         std::cout << "placed " << bestLayout.size() << '/' << parts.size()
                   << "  ->  " << cli.out << "\n";
         ExportPlacedToDXF(cli.dxf, parts, bestLayout, cli.W, cli.H);
+        ExportPlacedToSVG("layout.svg", parts, bestLayout, cli.W, cli.H);
         std::cout << "DXF exported to " << cli.dxf << "\n";
         return 0;
     }

@@ -1,4 +1,5 @@
 #include "geometry.h"
+#include <numeric>
 
 double gKerf = 0.0;
 double gGap = 0.0;

@@ -1,8 +1,10 @@
-import sys
+import argparse
 import json
 import math
+import sys
 import ezdxf
 from ezdxf.units import InsertUnits, conversion_factor
+from config_util import load_config
 
 def dist(p, q):
     return math.hypot(p[0] - q[0], p[1] - q[1])
@@ -152,22 +154,29 @@ def extract_all_details(dxf_file: str, tol: float = 0.1):
 
     return details
 
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="Extract details from DXF")
+    parser.add_argument("input")
+    parser.add_argument("output")
+    parser.add_argument("repeat", nargs="?", default="repeat=1")
+    parser.add_argument("--config", default="config.yaml")
+    return parser.parse_args(argv)
+
+
 def main(argv=None):
-    argv = argv or sys.argv[1:]
-    if not (2 <= len(argv) <= 3):
-        print("Usage: python extract_multi_details.py <input.dxf> <output.json> [repeat=N]")
-        return 1
-    in_dxf, out_json = argv[:2]
+    args = parse_args(argv)
+    cfg = load_config(args.config)
+    in_dxf = args.input
+    out_json = args.output
     repeat = 1
-    if len(argv) == 3:
-        arg = argv[2]
-        if arg.startswith("repeat="):
-            try:
-                repeat = int(arg.split("=", 1)[1])
-            except Exception:
-                print("Invalid repeat argument, must be repeat=N")
-                return 1
-    details = extract_all_details(in_dxf, tol=0.05)
+    if isinstance(args.repeat, str) and args.repeat.startswith("repeat="):
+        try:
+            repeat = int(args.repeat.split("=", 1)[1])
+        except Exception:
+            print("Invalid repeat argument, must be repeat=N")
+            return 1
+    tol = cfg.get("tolerance", 0.05)
+    details = extract_all_details(in_dxf, tol=tol)
     if repeat > 1:
         details = details * repeat
     
@@ -192,4 +201,4 @@ def main(argv=None):
     print(f"Saved {len(details)} details to {out_json} (repeat={repeat})")
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

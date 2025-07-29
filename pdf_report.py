@@ -1,10 +1,13 @@
+import argparse
 import csv
+from pathlib import Path
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.utils import ImageReader
 import matplotlib.pyplot as plt
 import ezdxf
 import io
+from config_util import load_config
 
 def _plot_layout(dxf_file, fill, waste):
     doc = ezdxf.readfile(dxf_file)
@@ -66,9 +69,21 @@ def generate_report(csv_file, pdf_file, dxf_file=None):
 
     c.save()
 
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description='Generate PDF report')
+    parser.add_argument('csv')
+    parser.add_argument('pdf')
+    parser.add_argument('--dxf', default=None)
+    parser.add_argument('--config', default='config.yaml')
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    cfg = load_config(args.config)
+    dxf_file = args.dxf or cfg.get('layout_dxf')
+    generate_report(args.csv, args.pdf, dxf_file)
+
+
 if __name__ == '__main__':
-    import sys
-    if len(sys.argv)!=3:
-        print('usage: pdf_report.py lay.csv report.pdf')
-        sys.exit(1)
-    generate_report(sys.argv[1], sys.argv[2])
+    raise SystemExit(main())

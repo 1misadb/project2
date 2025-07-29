@@ -1,112 +1,90 @@
+import argparse
+import os
 import subprocess
 import sys
-import os
+from multiprocessing import Pool
+from pathlib import Path
+
+from config_util import load_config
 
 sys.stdout.reconfigure(encoding='utf-8')
 
-def usage():
-    print("Пример использования:")
-    print("  python auto_nest.py -s 2000x2000 [-i N] [--флаги] part1.dxf:3 part2.dxf:1 ...")
-    sys.exit(1)
 
-def _run(t):
-    cmd = t[0]
+def _run(task):
+    cmd = task[0]
     print("[PY] RUN:", " ".join(cmd))
     subprocess.check_call(cmd)
-    return t[1], t[2], t[3], t[4]
+    return task[1], task[2], task[3], task[4]
 
-if __name__ == "__main__":
-    if "-s" not in sys.argv or len(sys.argv) < 4:
-        usage()
 
-    allowed_flags = {"-v", "--verbose", "-j", "--join-segments",
-                     "--pop", "--gen", "--polish", "--fill-gaps"}
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="Auto nesting pipeline")
+    parser.add_argument("files", nargs="*", help="DXF files with optional :N count")
+    parser.add_argument("-s", "--sheet", help="Sheet size WxH")
+    parser.add_argument("-i", "--iterations", type=int)
+    parser.add_argument("--strategy", default=None)
+    parser.add_argument("--runs", type=int)
+    parser.add_argument("-n", "--num", nargs="*")
+    parser.add_argument("--fill-gaps", action="store_true")
+    parser.add_argument("--config", default="config.yaml")
+    parser.add_argument("-v", "--verbose", action="store_true")
+    parser.add_argument("-j", "--join-segments", action="store_true")
+    parser.add_argument("--pop", type=int)
+    parser.add_argument("--gen", type=int)
+    parser.add_argument("--polish", type=int)
+    return parser.parse_args(argv)
 
-    s_idx = sys.argv.index("-s")
-    try:
-        sheet = sys.argv[s_idx + 1]
 
-        iterations = None
-        nums = []
-        dxf_files = []  # список кортежей (имя, количество)
-        nest_flags = [] # сюда кидаем "-v", "-j" и любые другие поддерживаемые
-        strategies = ["area"]
-        runs = 1
-        fill_gaps = False
+def main(argv=None):
+    args = parse_args(argv)
+    cfg = load_config(args.config)
 
-        i = s_idx + 2
-        while i < len(sys.argv):
-            arg = sys.argv[i]
-            if arg == "-i":
-                iterations = sys.argv[i + 1]
-                i += 2
-            elif arg == "--strategies":
-                strategies = sys.argv[i+1].split(',')
-                i += 2
-            elif arg == "--strategy":
-                strategies = [sys.argv[i+1]]
-                i += 2
-            elif arg == "--runs":
-                runs = int(sys.argv[i+1])
-                i += 2
-            elif arg == "-n":
-                i += 1
-                while i < len(sys.argv):
-                    arg2 = sys.argv[i]
-                    if arg2.startswith("-"):
-                        break
-                    try:
-                        nums.append(int(arg2))
-                    except ValueError:
-                        break
-                    i += 1
-            elif arg in allowed_flags:
-                nest_flags.append(arg)
-                if arg == "--fill-gaps":
-                    fill_gaps = True
-                    i += 1
-                elif arg.startswith('--') and arg not in ("-v", "--verbose", "-j", "--join-segments"):
-                    if i + 1 < len(sys.argv):
-                        nest_flags.append(sys.argv[i+1])
-                        i += 2
-                    else:
-                        usage()
-                else:
-                    i += 1
-            else:
-                # Файл
-                if ":" in arg:
-                    fname, nstr = arg.rsplit(":", 1)
-                    try:
-                        n = int(nstr)
-                    except Exception:
-                        print(f"[ERROR] Некорректный формат количества: {arg}")
-                        usage()
-                    dxf_files.append((fname, n))
-                else:
-                    dxf_files.append((arg, 1))
-                i += 1
+    sheet = args.sheet or cfg.get("sheet")
+    if not sheet or len(args.files) == 0:
+        print("usage: auto_nest.py -s WxH part1.dxf[:N] ...")
+        return 1
 
-        if not dxf_files:
-            usage()
+    iterations = args.iterations if args.iterations is not None else cfg.get("iterations", 1)
+    strategies = [args.strategy] if args.strategy else [cfg.get("strategy", "area")]
+    runs = args.runs if args.runs is not None else cfg.get("runs", 1)
+    nums = [int(n) for n in (args.num or [])]
 
-    except Exception:
-        usage()
+    nest_flags = []
+    if args.verbose or cfg.get("verbose"):
+        nest_flags.append("-v")
+    if args.join_segments or cfg.get("join_segments"):
+        nest_flags.append("-j")
+    if args.fill_gaps or cfg.get("fill_gaps"):
+        nest_flags.append("--fill-gaps")
+    if args.pop is not None:
+        nest_flags += ["--pop", str(args.pop)]
+    elif cfg.get("pop_size"):
+        nest_flags += ["--pop", str(cfg.get("pop_size"))]
+    if args.gen is not None:
+        nest_flags += ["--gen", str(args.gen)]
+    elif cfg.get("generations"):
+        nest_flags += ["--gen", str(cfg.get("generations"))]
+    if args.polish is not None or cfg.get("polish"):
+        polish = args.polish if args.polish is not None else cfg.get("polish")
+        nest_flags += ["--polish", str(polish)]
 
-    json_files = []
+    dxf_files = []
+    for item in args.files:
+        if ":" in item:
+            fname, n = item.rsplit(":", 1)
+            dxf_files.append((fname, int(n)))
+        else:
+            dxf_files.append((item, 1))
+
     python_exec = sys.executable
+    json_files = []
     for dxf, repeat in dxf_files:
-        json_out = os.path.splitext(dxf)[0] + ".json"
-        print(f"[PY] DXF → JSON: {dxf} -> {json_out} (repeat={repeat})")
-        cmd = [python_exec, "extract_all_shapes.py", dxf, json_out]
+        json_out = Path(dxf).with_suffix(".json")
+        cmd = [python_exec, "extract_all_shapes.py", dxf, str(json_out)]
         if repeat > 1:
             cmd.append(f"repeat={repeat}")
-        try:
-            subprocess.check_call(cmd)
-        except subprocess.CalledProcessError as e:
-            print(f"[ERROR] Failed to convert {dxf}: {e}")
-            sys.exit(1)
-        json_files.append(json_out)
+        subprocess.check_call(cmd)
+        json_files.append(str(json_out))
 
     nest_binary = "nest.exe" if os.name == "nt" else "./nest"
     tasks = []
@@ -115,37 +93,32 @@ if __name__ == "__main__":
             out_csv = f"lay_{r}_{strat}.csv"
             out_dxf = f"layout_{r}_{strat}.dxf"
             cmd = [nest_binary, "-s", sheet]
-            if iterations is not None:
-                cmd += ["-i", iterations]
+            if iterations:
+                cmd += ["-i", str(iterations)]
             if nums:
-                cmd += ["-n"] + list(map(str, nums))
+                cmd += ["-n"] + [str(n) for n in nums]
             cmd += nest_flags
-            if fill_gaps:
-                cmd += ["--fill-gaps"]
             cmd += ["--strategy", strat, "--run", str(r), "--dxf", out_dxf, "-o", out_csv]
             cmd += json_files
             tasks.append((cmd, out_csv, out_dxf, strat, r))
 
-    from multiprocessing import Pool
     with Pool() as pool:
         results = pool.map(_run, tasks)
 
-    # Aggregate lay.csv
-    with open('lay.csv','w') as fout:
-        header_written=False
+    with open("lay.csv", "w") as fout:
+        header_written = False
         for csvf, dxff, strat, r in results:
             with open(csvf) as fin:
                 if not header_written:
                     fout.write(fin.readline())
-                    header_written=True
+                    header_written = True
                 else:
                     fin.readline()
                 fout.writelines(fin.readlines())
 
-    # choose best by minimal waste
     import csv
     best = None
-    with open('lay.csv') as f:
+    with open("lay.csv") as f:
         reader = csv.DictReader(f)
         for row in reader:
             if best is None or float(row['waste_mm2']) < float(best['waste_mm2']):
@@ -160,3 +133,8 @@ if __name__ == "__main__":
     except Exception as e:
         print("[PY] PDF generation failed", e)
     print("[PY] Done")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

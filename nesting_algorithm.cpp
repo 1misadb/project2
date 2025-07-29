@@ -31,6 +31,7 @@
 #include <tuple>
 #include <random>
 #include <mutex>
+#include "cxxopts.hpp"
 #include <chrono>
 #include <atomic>
 #include <thread>
@@ -46,6 +47,8 @@
 #include <json.hpp>
 double gUnit = 1.0;
 bool gVerbose = false;
+double gKerf = 0.0;
+double gGap = 0.0;
 using namespace Clipper2Lib;
 
 static std::string trim(const std::string& s) {
@@ -131,7 +134,8 @@ namespace std {
 }
 
 // --- Global overlap cache ---
-static std::unordered_map<OverlapKey, bool> overlapCache;
+#include <tbb/concurrent_unordered_map.h>
+static tbb::concurrent_unordered_map<OverlapKey, bool> overlapCache;
 static std::deque<OverlapKey> overlapOrder;
 static std::mutex overlapMutex;
 constexpr size_t OVERLAP_CACHE_MAX = 20000;
@@ -260,8 +264,11 @@ static inline double areaMM2(const Paths64& p)
 
 // Test for polygon overlap
 bool overlap(const Paths64& a, const Paths64& b) {
-    Paths64 ua = Union(a, FillRule::NonZero);
-    Paths64 ub = Union(b, FillRule::NonZero);
+    double delta = (gKerf * 0.5 + gGap) * SCALE;
+    Paths64 ea = InflatePaths(a, delta, JoinType::Miter, EndType::Polygon);
+    Paths64 eb = InflatePaths(b, delta, JoinType::Miter, EndType::Polygon);
+    Paths64 ua = Union(ea, FillRule::NonZero);
+    Paths64 ub = Union(eb, FillRule::NonZero);
     Paths64 isect = Intersect(ua, ub, FillRule::NonZero);
     return std::abs(Area(isect)) > 0.0;
 }
@@ -1240,7 +1247,7 @@ static std::vector<Place> greedy(
                             if (overlapOrder.size() > OVERLAP_CACHE_MAX) {
                                 OverlapKey old = overlapOrder.front();
                                 overlapOrder.pop_front();
-                                overlapCache.erase(old);
+                                overlapCache.unsafe_erase(old);
                             }
                         }
 
@@ -1347,83 +1354,57 @@ static void printHelp(const char* exe){
 // Parse command line arguments
 static CLI parse(int ac, char** av){
     CLI c;
+    cxxopts::Options options(av[0], "Nesting algorithm");
+    options.add_options()
+        ("config", "config file", cxxopts::value<std::string>()->default_value("config.yaml"))
+        ("s,sheet", "sheet WxH", cxxopts::value<std::string>())
+        ("r,rot", "rotation step", cxxopts::value<int>())
+        ("o,out", "output csv", cxxopts::value<std::string>())
+        ("dxf", "output dxf", cxxopts::value<std::string>())
+        ("iter", "iterations", cxxopts::value<int>())
+        ("pop", "population size", cxxopts::value<int>())
+        ("gen", "generations", cxxopts::value<int>())
+        ("strategy", "strategy", cxxopts::value<std::string>())
+        ("kerf", "kerf width", cxxopts::value<double>())
+        ("gap", "gap between parts", cxxopts::value<double>())
+        ("verbose", "verbose", cxxopts::value<bool>()->default_value("false"))
+        ("fill-gaps", "fill gaps")
+        ("help", "print help");
+
+    auto result = options.parse(ac, av);
+    if(result.count("help") || ac==1){
+        std::cout << options.help() << "\n";
+        std::exit(0);
+    }
+
+    // load config
+    std::string cfg_path = result["config"].as<std::string>();
+    nlohmann::json cfg;
+    std::ifstream cf(cfg_path);
+    if(cf) cf >> cfg;
+
+    auto sheet = cfg.value("sheet", std::string());
+    if(result.count("sheet")) sheet = result["sheet"].as<std::string>();
+    if(!sheet.empty()){
+        auto x = sheet.find('x');
+        c.W = std::stod(sheet.substr(0,x));
+        c.H = std::stod(sheet.substr(x+1));
+    }
+    c.rot = result.count("rot") ? result["rot"].as<int>() : cfg.value("rot", DEFAULT_ROT_STEP);
+    c.out = result.count("out") ? result["out"].as<std::string>() : cfg.value("out", std::string("layout.csv"));
+    c.dxf = result.count("dxf") ? result["dxf"].as<std::string>() : cfg.value("dxf", std::string("layout.dxf"));
+    c.iter = result.count("iter") ? result["iter"].as<int>() : cfg.value("iterations",1);
+    c.pop_size = result.count("pop") ? result["pop"].as<int>() : cfg.value("pop_size",50);
+    c.generations = result.count("gen") ? result["gen"].as<int>() : cfg.value("generations",50);
+    c.strategy = result.count("strategy") ? result["strategy"].as<std::string>() : cfg.value("strategy","area");
+    gKerf = result.count("kerf") ? result["kerf"].as<double>() : cfg.value("kerf",0.0);
+    gGap  = result.count("gap")  ? result["gap"].as<double>()  : cfg.value("gap",0.0);
+    c.verbose = result["verbose"].as<bool>();
+    c.fill_gaps = result.count("fill-gaps") ? true : cfg.value("fill_gaps", false);
+
     for(int i=1;i<ac;++i){
         std::string a = av[i];
-        if(a=="-h"||a=="--help"){ printHelp(av[0]); std::exit(0); }
-        else if(a=="-s"||a=="--sheet"){
-            if(i+1>=ac) throw std::runtime_error("missing value for --sheet");
-            std::string s = av[++i]; auto x = s.find('x');
-            if(x==std::string::npos) throw std::runtime_error("sheet format WxH");
-            c.W = std::stod(s.substr(0,x));
-            c.H = std::stod(s.substr(x+1));
-        }else if(a=="-r"||a=="--rot"){
-            if(i+1>=ac) throw std::runtime_error("missing value for --rot");
-            c.rot = std::stoi(av[++i]);
-            if(c.rot <= 0 || c.rot > 360) throw std::runtime_error("--rot must be in 1..360");
-        }else if(a=="-o"||a=="--out"){ 
-            if(i+1>=ac) throw std::runtime_error("missing value for --out");
-            c.out = av[++i];
-        }else if(a=="--dxf"){ 
-            if(i+1>=ac) throw std::runtime_error("missing value for --dxf");
-            c.dxf = av[++i];
-        }else if(a=="-j"||a=="--join-segments"){ 
-            c.joinSegments = true;
-        }else if(a=="-v"||a=="--verbose"){ 
-            c.verbose = true;
-        }else if(a=="--cand"){
-            if(i+1>=ac) throw std::runtime_error("missing value for --cand");
-            c.cand_limit = std::stoi(av[++i]);
-        }else if(a=="--nfp"){
-            if(i+1>=ac) throw std::runtime_error("missing value for --nfp");
-            c.nfp_limit = std::stoi(av[++i]);
-        }else if(a=="--overlap"){
-            if(i+1>=ac) throw std::runtime_error("missing value for --overlap");
-            c.overlap_limit = std::stoi(av[++i]);
-        }else if(a=="--time"){
-            if(i+1>=ac) throw std::runtime_error("missing value for --time");
-            c.time_limit = std::stod(av[++i]);
-        }else if(a=="-i"||a=="--iter"){
-            if(i+1>=ac) throw std::runtime_error("missing value for --iter");
-            c.iter = std::stoi(av[++i]);
-        }else if(a=="--runs"){
-            if(i+1>=ac) throw std::runtime_error("missing value for --runs");
-            c.runs = std::stoi(av[++i]);
-        }else if(a=="--pop"){
-            if(i+1>=ac) throw std::runtime_error("missing value for --pop");
-            c.pop_size = std::stoi(av[++i]);
-        }else if(a=="--gen"){
-            if(i+1>=ac) throw std::runtime_error("missing value for --gen");
-            c.generations = std::stoi(av[++i]);
-        }else if(a=="--polish"){
-            if(i+1>=ac) throw std::runtime_error("missing value for --polish");
-            c.polish = std::stoi(av[++i]);
-        }else if(a=="--strategy"){ 
-            if(i+1>=ac) throw std::runtime_error("missing value for --strategy"); 
-            c.strategy = av[++i];
-        }else if(a=="-g"||a=="--grid"){ 
-            if(i+1>=ac) throw std::runtime_error("missing value for --grid");
-            c.grid = std::stod(av[++i]);
-            if(c.grid <= 0) throw std::runtime_error("--grid must be > 0");
-        }else if(a=="--run"){ 
-            if(i+1>=ac) throw std::runtime_error("missing value for --run");
-            c.run = std::stoi(av[++i]);
-        }else if(a=="--fill-gaps"){ 
-            c.fill_gaps = true;
-        }else if(a=="-n"||a=="--num"){ 
-            if(c.grid < 1){
-                std::cerr << "[WARN] grid too small, clamped to 1mm" << std::endl;
-                c.grid = 1;
-            }
-            while (i+1<ac && std::isdigit(av[i+1][0]))
-            {
-                c.nums.push_back(std::stoi(av[++i]));
-            }
-            
-        }else if(a.size() && a[0]=='-'){
-            throw std::runtime_error("unknown option " + a);
-        }else{
-            c.files.push_back(a);
-        }
+        if(a.size() && a[0] != '-') c.files.push_back(a);
     }
     if(c.W<=0 || c.H<=0 || c.files.empty())
         throw std::runtime_error("use --help for usage");
@@ -1764,6 +1745,7 @@ std::vector<Place> genetic_nesting(
 // * лучший результат greedy передаётся в genetic_nesting как стартовая особь
 // * итоговый bestLayout определяется как min(area) среди greedy & GA
 // -----------------------------------------------------------------------------
+#ifndef NEST_UNIT_TEST
 int main(int argc, char* argv[])
 {
     try {
@@ -1865,3 +1847,4 @@ int main(int argc, char* argv[])
         return 1;
     }
 }
+#endif // NEST_UNIT_TEST

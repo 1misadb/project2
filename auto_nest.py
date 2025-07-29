@@ -4,6 +4,7 @@ import subprocess
 import sys
 from multiprocessing import Pool
 from pathlib import Path
+from tqdm import tqdm  # прогресс-бар
 
 from config_util import load_config
 
@@ -32,6 +33,7 @@ def parse_args(argv=None):
     parser.add_argument("--pop", type=int)
     parser.add_argument("--gen", type=int)
     parser.add_argument("--polish", type=int)
+    parser.add_argument("--rot", type=int, help="rotation step (degrees)")
     return parser.parse_args(argv)
 
 
@@ -64,6 +66,10 @@ def main(argv=None):
         nest_flags += ["--gen", str(args.gen)]
     elif cfg.get("generations"):
         nest_flags += ["--gen", str(cfg.get("generations"))]
+    if args.rot is not None:
+        nest_flags += ["--rot", str(args.rot)]
+    elif cfg.get("rot"):
+        nest_flags += ["--rot", str(cfg.get("rot"))]
     if args.polish is not None or cfg.get("polish"):
         polish = args.polish if args.polish is not None else cfg.get("polish")
         nest_flags += ["--polish", str(polish)]
@@ -100,7 +106,7 @@ def main(argv=None):
         for r in range(runs):
             out_csv = f"lay_{r}_{strat}.csv"
             out_dxf = f"layout_{r}_{strat}.dxf"
-            cmd = [nest_binary, "-s", sheet]
+            cmd = [nest_binary, "--config", "config.json", "-s", sheet]
             if iterations:
                 cmd += ["--iter", str(iterations)]
             if nums:
@@ -110,8 +116,10 @@ def main(argv=None):
             cmd += json_files
             tasks.append((cmd, out_csv, out_dxf, strat, r))
 
+    # Прогресс-бар по всем задачам
+    total = len(tasks)
     with Pool() as pool:
-        results = pool.map(_run, tasks)
+        results = list(tqdm(pool.imap_unordered(_run, tasks), total=total, desc="Nesting progress", ncols=80))
 
     with open("lay.csv", "w") as fout:
         header_written = False

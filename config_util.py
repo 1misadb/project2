@@ -1,7 +1,7 @@
 import yaml
 from pathlib import Path
 
-DEFAULT_CONFIG = Path('config.yaml')
+DEFAULT_CONFIG = Path('config.JSON')
 
 def load_config(path=None):
     path = Path(path or DEFAULT_CONFIG)

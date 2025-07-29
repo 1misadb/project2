@@ -94,11 +94,11 @@ def main(argv=None):
             out_dxf = f"layout_{r}_{strat}.dxf"
             cmd = [nest_binary, "-s", sheet]
             if iterations:
-                cmd += ["-i", str(iterations)]
+                cmd += ["--iter", str(iterations)]
             if nums:
                 cmd += ["-n"] + [str(n) for n in nums]
             cmd += nest_flags
-            cmd += ["--strategy", strat, "--run", str(r), "--dxf", out_dxf, "-o", out_csv]
+            cmd += ["--strategy", strat, "--dxf", out_dxf, "-o", out_csv]
             cmd += json_files
             tasks.append((cmd, out_csv, out_dxf, strat, r))
 

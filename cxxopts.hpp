@@ -771,23 +771,17 @@ inline ArguDesc ParseArgument(const char *arg, bool &matched)
 #else  // CXXOPTS_NO_REGEX
 
 namespace {
-static const
-const char* const integer_pattern =
+static const char* const integer_pattern =
   "(-)?(0x)?([0-9a-zA-Z]+)|((0x)?0)";
-static const
-const char* const truthy_pattern =
+static const char* const truthy_pattern =
   "(t|T)(rue)?|1";
-static const
-const char* const falsy_pattern =
+static const char* const falsy_pattern =
   "(f|F)(alse)?|0";
-static const
-const char* const option_pattern =
+static const char* const option_pattern =
   "--([[:alnum:]][-_[:alnum:]\\.]+)(=(.*))?|-([[:alnum:]].*)";
-static const
-const char* const option_specifier_pattern =
+static const char* const option_specifier_pattern =
   "([[:alnum:]][-_[:alnum:]\\.]*)(,[ ]*[[:alnum:]][-_[:alnum:]]*)*";
-static const
-const char* const option_specifier_separator_pattern = ", *";
+static const char* const option_specifier_separator_pattern = ", *";
 
 } // namespace
 

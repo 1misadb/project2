@@ -15,9 +15,13 @@ target_link_libraries(geometry PUBLIC clipper3)
 add_executable(nest
     nesting_algorithm.cpp
 )
-target_include_directories(nest PRIVATE . clipper3)
+target_include_directories(nest PRIVATE . clipper3 spdlog/include)
 target_link_libraries(nest PRIVATE geometry TBB::tbb)
 
 add_executable(test_overlap tests/test_overlap.cpp)
 target_include_directories(test_overlap PRIVATE . clipper3)
 target_link_libraries(test_overlap PRIVATE geometry TBB::tbb)
+
+add_executable(test_benchmark tests/test_benchmark.cpp)
+target_include_directories(test_benchmark PRIVATE . clipper3)
+target_link_libraries(test_benchmark PRIVATE geometry TBB::tbb)

@@ -1,4 +1,7 @@
 #include "geometry.h"
+#ifdef USE_CUDA
+#include <cuda_runtime.h>
+#endif
 #include <limits>
 #include <algorithm>
 #include <numeric>
@@ -111,5 +114,71 @@ bool overlapBVH(const std::vector<BVHNode>& treeA, const Paths64& pa,
                 const std::vector<BVHNode>& treeB, const Paths64& pb){
     if(treeA.empty() || treeB.empty()) return false;
     return overlapBVHRec(treeA,pa,treeB,pb,0,0);
+}
+
+#ifdef USE_CUDA
+struct GPUPath { int start; int size; };
+struct GPUShape { int start; int size; };
+extern void overlapKernel(const long long* xs,const long long* ys,
+                          const GPUPath* paths, GPUShape cand,
+                          const GPUShape* shapes,int numShapes,bool* res);
+#endif
+
+bool cuda_available(){
+#ifdef USE_CUDA
+    int cnt=0; return cudaGetDeviceCount(&cnt)==cudaSuccess && cnt>0;
+#else
+    return false;
+#endif
+}
+
+std::vector<bool> overlapBatchGPU(const Paths64& cand,
+                                  const std::vector<Paths64>& others){
+#ifdef USE_CUDA
+    if(!cuda_available()){ // fallback
+        std::vector<bool> r(others.size());
+        for(size_t i=0;i<others.size();++i) r[i]=overlap(cand, others[i]);
+        return r;
+    }
+    std::vector<long long> xs,ys; xs.reserve(1024); ys.reserve(1024);
+    std::vector<GPUPath> paths; paths.reserve(256);
+    GPUShape candShape{(int)paths.size(), (int)cand.size()};
+    for(const auto& p:cand){
+        GPUPath gp{(int)xs.size(), (int)p.size()};
+        for(auto pt:p){ xs.push_back(pt.x); ys.push_back(pt.y); }
+        paths.push_back(gp);
+    }
+    std::vector<GPUShape> shapes; shapes.reserve(others.size());
+    for(const auto& sh:others){
+        GPUShape s{(int)paths.size(), (int)sh.size()};
+        for(const auto& p:sh){
+            GPUPath gp{(int)xs.size(), (int)p.size()};
+            for(auto pt:p){ xs.push_back(pt.x); ys.push_back(pt.y); }
+            paths.push_back(gp);
+        }
+        shapes.push_back(s);
+    }
+    long long* d_xs; long long* d_ys; GPUPath* d_paths; GPUShape* d_shapes; bool* d_out;
+    size_t pts_sz=xs.size()*sizeof(long long); cudaMalloc(&d_xs,pts_sz); cudaMalloc(&d_ys,pts_sz);
+    cudaMemcpy(d_xs,xs.data(),pts_sz,cudaMemcpyHostToDevice);
+    cudaMemcpy(d_ys,ys.data(),pts_sz,cudaMemcpyHostToDevice);
+    cudaMalloc(&d_paths,paths.size()*sizeof(GPUPath));
+    cudaMemcpy(d_paths,paths.data(),paths.size()*sizeof(GPUPath),cudaMemcpyHostToDevice);
+    cudaMalloc(&d_shapes,shapes.size()*sizeof(GPUShape));
+    cudaMemcpy(d_shapes,shapes.data(),shapes.size()*sizeof(GPUShape),cudaMemcpyHostToDevice);
+    cudaMalloc(&d_out,shapes.size()*sizeof(bool));
+    GPUShape d_cand=candShape; // copy by value
+    int threads=128; int blocks=(shapes.size()+threads-1)/threads;
+    overlapKernel<<<blocks,threads>>>(d_xs,d_ys,d_paths,d_cand,d_shapes,(int)shapes.size(),d_out);
+    cudaDeviceSynchronize();
+    std::vector<bool> res(others.size());
+    cudaMemcpy(res.data(),d_out,others.size()*sizeof(bool),cudaMemcpyDeviceToHost);
+    cudaFree(d_xs); cudaFree(d_ys); cudaFree(d_paths); cudaFree(d_shapes); cudaFree(d_out);
+    return res;
+#else
+    std::vector<bool> r(others.size());
+    for(size_t i=0;i<others.size();++i) r[i]=overlap(cand, others[i]);
+    return r;
+#endif
 }
 

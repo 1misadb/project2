@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.14)
 project(nesting)
 set(CMAKE_CXX_STANDARD 17)
 find_package(TBB REQUIRED)
+find_package(CUDAToolkit)
 add_library(clipper3
     clipper3/src/clipper.engine.cpp
     clipper3/src/clipper.offset.cpp
@@ -11,6 +12,15 @@ target_include_directories(clipper3 PUBLIC clipper3)
 add_library(geometry geometry.cpp)
 target_include_directories(geometry PUBLIC . clipper3)
 target_link_libraries(geometry PUBLIC clipper3)
+if(CUDAToolkit_FOUND)
+    enable_language(CUDA)
+    add_library(cuda_kernels STATIC overlap_gpu.cu)
+    target_link_libraries(cuda_kernels PUBLIC CUDA::cudart)
+    target_compile_definitions(cuda_kernels PUBLIC USE_CUDA=1)
+    target_include_directories(cuda_kernels PUBLIC .)
+    target_link_libraries(geometry PUBLIC cuda_kernels)
+    add_definitions(-DUSE_CUDA)
+endif()
 
 add_executable(nest
     nesting_algorithm.cpp

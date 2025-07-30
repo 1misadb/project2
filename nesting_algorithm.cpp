@@ -1221,6 +1221,11 @@ static std::vector<Place> greedy(
                     }
                     Paths64 moved = movePaths(op.poly, c.x, c.y);
                     bool clash = false;
+                    std::vector<Paths64> batchA;
+                    std::vector<Paths64> batchB;
+                    std::vector<OverlapKey> batchKeys;
+                    std::vector<bool> batchRes;
+
                     for (size_t pi = 0; pi < placedShapes.size(); ++pi) {
                         const auto& pl = placedShapes[pi];
                         Rect64 bbPl = getBBox(pl);
@@ -1229,46 +1234,45 @@ static std::vector<Place> greedy(
                             bbPl.top   < bbMoved.bottom || bbPl.bottom > bbMoved.top)
                             continue;
                         overlap_checks++;
-                        const auto& po = placedOrient[pi]; // ориентация уже размещённой детали
-                        const auto& ps = placedShapes[pi]; // shape уже размещённой детали
+                        const auto& po = placedOrient[pi];
                         int64_t cx = I64mm(c.x), cy = I64mm(c.y);
-
                         int64_t xb = bbPl.left;
                         int64_t yb = bbPl.bottom;
                         OverlapKey key = makeKey(
                             op.id, op.ang, cx, cy,
                             po.id, po.ang, xb, yb
                         );
-
-                        bool ov = false;
-                        bool found = false;
+                        bool ov=false; bool found=false;
                         {
                             std::lock_guard<std::mutex> lock(overlapMutex);
                             auto it = overlapCache.find(key);
-                            if (it != overlapCache.end()) {
-                                ov = it->second;
-                                found = true;
-                            }
+                            if(it!=overlapCache.end()){ ov = it->second; found=true; }
                         }
-                        if (!found) {
-                            ov = overlap(ps, moved);
-                            std::lock_guard<std::mutex> lock(overlapMutex);
-                            overlapCache[key] = ov;
-                            overlapOrder.push_back(key);
-                            if (overlapOrder.size() > OVERLAP_CACHE_MAX) {
-                                OverlapKey old = overlapOrder.front();
-                                overlapOrder.pop_front();
-                                overlapCache.unsafe_erase(old);
-                            }
+                        if(found){
+                            if(ov){ clash=true; break; }
+                            else continue;
                         }
+                        batchA.push_back(pl);
+                        batchB.push_back(moved);
+                        batchKeys.push_back(key);
+                    }
 
-                        // --- дальше условия такие же, как были ---
-                        if (bbPl.right < bb.left || bbPl.left > bb.right ||
-                            bbPl.top < bb.bottom || bbPl.bottom > bb.top)
-                            continue;
-                        if (ov) {
-                            clash = true;
-                            break;
+                    if(!clash && !batchA.empty()){
+                        checkOverlapBatch(batchA,batchB,batchRes);
+                        for(size_t bi=0;bi<batchRes.size();++bi){
+                            bool ov=batchRes[bi];
+                            OverlapKey key=batchKeys[bi];
+                            {
+                                std::lock_guard<std::mutex> lock(overlapMutex);
+                                overlapCache[key]=ov;
+                                overlapOrder.push_back(key);
+                                if(overlapOrder.size()>OVERLAP_CACHE_MAX){
+                                    OverlapKey old=overlapOrder.front();
+                                    overlapOrder.pop_front();
+                                    overlapCache.unsafe_erase(old);
+                                }
+                            }
+                            if(ov) clash=true;
                         }
                     }
                     if (clash) continue;

@@ -113,3 +113,24 @@ bool overlapBVH(const std::vector<BVHNode>& treeA, const Paths64& pa,
     return overlapBVHRec(treeA,pa,treeB,pb,0,0);
 }
 
+#ifdef USE_CUDA
+#include "cuda/overlap_cuda.h"
+#endif
+
+bool checkOverlapBatch(const std::vector<Paths64>& A,
+                       const std::vector<Paths64>& B,
+                       std::vector<bool>& out){
+#ifdef USE_CUDA
+    if(cudaAvailable())
+        return overlapBatchCUDA(A,B,out);
+#endif
+    out.resize(A.size());
+    for(size_t i=0;i<A.size();++i)
+        out[i] = overlap(A[i], B[i]);
+    return true;
+}
+
+#ifndef USE_CUDA
+bool cudaAvailable(){ return false; }
+#endif
+

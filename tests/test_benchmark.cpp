@@ -11,4 +11,12 @@ TEST_CASE("overlap bvh benchmark") {
     BENCHMARK("overlapBVH") {
         return overlapBVH(ta, a, tb, b);
     };
+
+    BENCHMARK("overlap_batch_cuda") {
+        std::vector<Paths64> aa{a};
+        std::vector<Paths64> bb{b};
+        std::vector<bool> res;
+        checkOverlapBatch(aa,bb,res);
+        return res[0];
+    };
 }

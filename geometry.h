@@ -19,3 +19,9 @@ std::vector<BVHNode> buildBVH(const Paths64& paths);
 bool overlapBVH(const std::vector<BVHNode>& treeA, const Paths64& pa,
                 const std::vector<BVHNode>& treeB, const Paths64& pb);
 
+// CUDA helpers -------------------------------------------------------------
+bool checkOverlapBatch(const std::vector<Paths64>& A,
+                       const std::vector<Paths64>& B,
+                       std::vector<bool>& out);
+bool cudaAvailable();
+

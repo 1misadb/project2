@@ -1000,43 +1000,62 @@ static std::vector<std::vector<Orient>> makeOrient(const std::vector<RawPart>& p
 static void precomputeNFPGPU(const std::vector<std::vector<Orient>>& orients,
                              LRUCache<Key, Paths64>& cache) {
 #ifdef USE_CUDA
-    const size_t BATCH = 128;
+    bool use_gpu = cuda_available();
+    auto t0 = std::chrono::steady_clock::now();
+    const size_t BATCH = NFP_BATCH_SIZE;
     std::vector<Path64> batchA, batchB;
     std::vector<Key> keys;
     size_t gpu_cnt = 0, cpu_cnt = 0;
-    for (const auto& oa : orients) {
-        for (const auto& a : oa) {
-            for (const auto& ob : orients) {
-                for (const auto& b : ob) {
-                    Key k = kfn(a.id, a.ang, b.id, b.ang);
-                    Paths64 tmp;
-                    if (cache.get(k, tmp)) continue;
-                    Path64 pa = SimplifyPath(a.poly[0], 0.05 * SCALE);
-                    Path64 pb = SimplifyPath(b.poly[0], 0.05 * SCALE);
-                    if (!isConvex(pa) || !isConvex(pb)) {
+    if (use_gpu) {
+        for (const auto& oa : orients) {
+            for (const auto& a : oa) {
+                for (const auto& ob : orients) {
+                    for (const auto& b : ob) {
+                        Key k = kfn(a.id, a.ang, b.id, b.ang);
+                        Paths64 tmp;
+                        if (cache.get(k, tmp)) continue;
+                        Path64 pa = SimplifyPath(a.poly[0], 0.05 * SCALE);
+                        Path64 pb = SimplifyPath(b.poly[0], 0.05 * SCALE);
+                        batchA.push_back(pa); batchB.push_back(pb); keys.push_back(k);
+                        ++gpu_cnt;
+                        if (batchA.size() >= BATCH) {
+                            auto sols = minkowskiBatchGPU(batchA, batchB);
+                            for (size_t i = 0; i < sols.size(); ++i)
+                                cache.put(keys[i], sols[i]);
+                            batchA.clear(); batchB.clear(); keys.clear();
+                        }
+                    }
+                }
+            }
+        }
+        if (!batchA.empty()) {
+            auto sols = minkowskiBatchGPU(batchA, batchB);
+            for (size_t i = 0; i < sols.size(); ++i)
+                cache.put(keys[i], sols[i]);
+        }
+    } else {
+        for (const auto& oa : orients) {
+            for (const auto& a : oa) {
+                for (const auto& ob : orients) {
+                    for (const auto& b : ob) {
+                        Key k = kfn(a.id, a.ang, b.id, b.ang);
+                        Paths64 tmp;
+                        if (cache.get(k, tmp)) continue;
+                        Path64 pa = SimplifyPath(a.poly[0], 0.05 * SCALE);
+                        Path64 pb = SimplifyPath(b.poly[0], 0.05 * SCALE);
                         auto res = MinkowskiSum(pa, pb, true);
                         cache.put(k, res);
                         ++cpu_cnt;
-                        continue;
-                    }
-                    batchA.push_back(pa); batchB.push_back(pb); keys.push_back(k);
-                    ++gpu_cnt;
-                    if (batchA.size() >= BATCH) {
-                        auto sols = minkowskiBatchGPU(batchA, batchB);
-                        for (size_t i = 0; i < sols.size(); ++i)
-                            cache.put(keys[i], sols[i]);
-                        batchA.clear(); batchB.clear(); keys.clear();
                     }
                 }
             }
         }
     }
-    if (!batchA.empty()) {
-        auto sols = minkowskiBatchGPU(batchA, batchB);
-        for (size_t i = 0; i < sols.size(); ++i)
-            cache.put(keys[i], sols[i]);
-    }
-    std::cerr << "[NFP-GPU] GPU: " << gpu_cnt << " пар, CPU: " << cpu_cnt << " пар" << std::endl;
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                  std::chrono::steady_clock::now() - t0).count();
+    std::cerr << "[NFP-GPU] batchGPU: " << gpu_cnt
+              << " pairs, CPU fallback: " << cpu_cnt
+              << " pairs, time: " << ms << " ms" << std::endl;
 #else
     (void)orients; (void)cache;
 #endif
@@ -1168,6 +1187,8 @@ static std::vector<Place> greedy(
     std::vector<Paths64> placedShapes;
     std::vector<Orient> placedOrient;
     std::vector<Place> layout;
+    size_t total_checks_gpu = 0;
+    size_t total_checks_all = 0;
 
     for (size_t i = 0; i < ord.size(); ++i) {
         overlap_checks = 0;                      // ① обнулить перед деталью
@@ -1267,6 +1288,8 @@ static std::vector<Place> greedy(
                     }
                     Paths64 moved = movePaths(op.poly, c.x, c.y);
                     bool clash = false;
+                    std::vector<Paths64> gpuBatch;
+                    std::vector<OverlapKey> gpuKeys;
                     for (size_t pi = 0; pi < placedShapes.size(); ++pi) {
                         const auto& pl = placedShapes[pi];
                         Rect64 bbPl = getBBox(pl);
@@ -1275,46 +1298,56 @@ static std::vector<Place> greedy(
                             bbPl.top   < bbMoved.bottom || bbPl.bottom > bbMoved.top)
                             continue;
                         overlap_checks++;
-                        const auto& po = placedOrient[pi]; // ориентация уже размещённой детали
-                        const auto& ps = placedShapes[pi]; // shape уже размещённой детали
+                        total_checks_all++;
+                        const auto& po = placedOrient[pi];
                         int64_t cx = I64mm(c.x), cy = I64mm(c.y);
-
                         int64_t xb = bbPl.left;
                         int64_t yb = bbPl.bottom;
                         OverlapKey key = makeKey(
                             op.id, op.ang, cx, cy,
-                            po.id, po.ang, xb, yb
-                        );
-
-                        bool ov = false;
-                        bool found = false;
+                            po.id, po.ang, xb, yb);
+                        bool found = false; bool cached = false;
                         {
                             std::lock_guard<std::mutex> lock(overlapMutex);
                             auto it = overlapCache.find(key);
                             if (it != overlapCache.end()) {
-                                ov = it->second;
+                                cached = it->second;
                                 found = true;
                             }
                         }
-                        if (!found) {
-                            ov = overlap(ps, moved);
-                            std::lock_guard<std::mutex> lock(overlapMutex);
-                            overlapCache[key] = ov;
-                            overlapOrder.push_back(key);
-                            if (overlapOrder.size() > OVERLAP_CACHE_MAX) {
-                                OverlapKey old = overlapOrder.front();
-                                overlapOrder.pop_front();
-                                overlapCache.unsafe_erase(old);
-                            }
-                        }
-
-                        // --- дальше условия такие же, как были ---
-                        if (bbPl.right < bb.left || bbPl.left > bb.right ||
-                            bbPl.top < bb.bottom || bbPl.bottom > bb.top)
+                        if (found) {
+                            if (cached) { clash = true; break; }
                             continue;
-                        if (ov) {
-                            clash = true;
-                            break;
+                        }
+                        gpuBatch.push_back(pl);
+                        gpuKeys.push_back(key);
+                    }
+                    if (!clash && !gpuBatch.empty()) {
+                        std::vector<bool> res;
+#ifdef USE_CUDA
+                        if (cuda_available()) {
+                            res = overlapBatchGPU(moved, gpuBatch);
+                            total_checks_gpu += gpuBatch.size();
+                        } else
+#endif
+                        {
+                            res.resize(gpuBatch.size());
+                            for (size_t bi = 0; bi < gpuBatch.size(); ++bi)
+                                res[bi] = overlap(moved, gpuBatch[bi]);
+                        }
+                        for (size_t bi = 0; bi < res.size(); ++bi) {
+                            bool ov = res[bi];
+                            {
+                                std::lock_guard<std::mutex> lock(overlapMutex);
+                                overlapCache[gpuKeys[bi]] = ov;
+                                overlapOrder.push_back(gpuKeys[bi]);
+                                if (overlapOrder.size() > OVERLAP_CACHE_MAX) {
+                                    OverlapKey old = overlapOrder.front();
+                                    overlapOrder.pop_front();
+                                    overlapCache.unsafe_erase(old);
+                                }
+                            }
+                            if (ov) { clash = true; break; }
                         }
                     }
                     if (clash) continue;
@@ -1383,6 +1416,7 @@ static std::vector<Place> greedy(
             std::cerr << "[WARN] Part " << i << " не удалось разместить – пропускаю\n";
         }
     }
+    spdlog::info("[GREEDY] overlap checks {} (GPU {})", total_checks_all, total_checks_gpu);
     return layout;
 }
 
@@ -1838,14 +1872,22 @@ std::vector<Place> genetic_nesting(
 #ifndef NEST_UNIT_TEST
 int main(int argc, char* argv[])
 {
-    #ifdef USE_CUDA
-    if (cuda_available())
+#ifdef USE_CUDA
+    cudaDeviceProp prop{};
+    bool gpu = cuda_available();
+    if (gpu) cudaGetDeviceProperties(&prop, 0);
+    std::cout << "[DEBUG] NEST build " << __DATE__ << ' ' << __TIME__
+              << ", CUDA=" << (gpu ? 1 : 0)
+              << ", device=" << (gpu ? prop.name : "none") << "\n";
+    if (gpu)
         std::cout << "[INFO] CUDA GPU detected and will be used for overlap checks\n";
     else
         std::cout << "[INFO] CUDA NOT detected, using CPU only\n";
-    #else
-        std::cout << "[INFO] CUDA NOT compiled in this binary, only CPU\n";
-    #endif
+#else
+    std::cout << "[DEBUG] NEST build " << __DATE__ << ' ' << __TIME__
+              << ", CUDA=0, device=none\n";
+    std::cout << "[INFO] CUDA NOT compiled in this binary, only CPU\n";
+#endif
     
 
 

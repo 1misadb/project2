@@ -1,3 +1,8 @@
+"""Helper script for running the nesting binary.
+
+The binary path is hard-coded as ``Release/nest.exe`` relative to this file.
+"""
+
 import argparse
 import os
 import subprocess

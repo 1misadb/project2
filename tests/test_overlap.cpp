@@ -28,3 +28,23 @@ TEST_CASE("overlap touch with kerf") {
     REQUIRE(overlap(a,b));
 }
 
+TEST_CASE("gpu batch random") {
+    std::mt19937 rng(42);
+    std::uniform_int_distribution<int> dist(-50, 50);
+    Paths64 base = { { {0,0},{20,0},{20,20},{0,20} } };
+    std::vector<Paths64> others;
+    for(int i=0;i<100;i++)
+        others.push_back(movePaths(base, dist(rng), dist(rng)));
+    std::vector<bool> cpu(others.size());
+    for(size_t i=0;i<others.size();++i)
+        cpu[i] = overlap(base, others[i]);
+    if(cuda_available()) {
+        auto gpu = overlapBatchGPU(base, others);
+        REQUIRE(gpu.size() == cpu.size());
+        for(size_t i=0;i<cpu.size();++i)
+            REQUIRE(gpu[i] == cpu[i]);
+    } else {
+        SUCCEED("cuda not available");
+    }
+}
+

@@ -3,6 +3,10 @@
 #include <vector>
 using namespace Clipper2Lib;
 
+#ifndef NFP_BATCH_SIZE
+#define NFP_BATCH_SIZE 256
+#endif
+
 extern double gKerf;
 extern double gGap;
 

@@ -31,3 +31,26 @@ TEST_CASE("cuda batch vs cpu") {
         return r[0];
     };
 }
+
+TEST_CASE("overlap throughput") {
+    Paths64 base = { { {0,0},{100,0},{100,100},{0,100} } };
+    std::vector<Paths64> others;
+    for(int i=0;i<10000;i++) others.push_back(movePaths(base,i*30,i*30));
+    auto t0 = std::chrono::steady_clock::now();
+    size_t cnt = 0;
+    for(const auto& o:others){ overlap(base,o); cnt++; }
+    auto ms_cpu = std::chrono::duration_cast<std::chrono::milliseconds>(
+                     std::chrono::steady_clock::now()-t0).count();
+    std::cout << "CPU throughput: " << (cnt/1000.0)/(ms_cpu/1000.0)
+              << " k-checks/s\n";
+    if(cuda_available()) {
+        t0 = std::chrono::steady_clock::now();
+        overlapBatchGPU(base, others);
+        auto ms_gpu = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::steady_clock::now()-t0).count();
+        std::cout << "GPU throughput: " << (cnt/1000.0)/(ms_gpu/1000.0)
+                  << " k-checks/s\n";
+    } else {
+        std::cout << "GPU not available\n";
+    }
+}

@@ -6,8 +6,6 @@ from multiprocessing import Pool
 from pathlib import Path
 from tqdm import tqdm  # прогресс-бар
 
-from config_util import load_config
-
 sys.stdout.reconfigure(encoding='utf-8')
 
 
@@ -27,7 +25,6 @@ def parse_args(argv=None):
     parser.add_argument("--runs", type=int)
     parser.add_argument("-n", "--num", nargs="*")
     parser.add_argument("--fill-gaps", action="store_true")
-    parser.add_argument("--config", default="config.yaml")
     parser.add_argument("-v", "--verbose", action="store_true")
     parser.add_argument("-j", "--join-segments", action="store_true")
     parser.add_argument("--pop", type=int)
@@ -39,39 +36,31 @@ def parse_args(argv=None):
 
 def main(argv=None):
     args = parse_args(argv)
-    cfg = load_config(args.config)
-
-    sheet = args.sheet or cfg.get("sheet")
+    sheet = args.sheet
     if not sheet or len(args.files) == 0:
         print("usage: auto_nest.py -s WxH part1.dxf[:N] ...")
         return 1
 
-    iterations = args.iterations if args.iterations is not None else cfg.get("iterations", 1)
-    strategies = [args.strategy] if args.strategy else [cfg.get("strategy", "area")]
-    runs = args.runs if args.runs is not None else cfg.get("runs", 1)
+    iterations = args.iterations if args.iterations is not None else 1
+    strategies = [args.strategy] if args.strategy else ["area"]
+    runs = args.runs if args.runs is not None else 1
     nums = [int(n) for n in (args.num or [])]
 
     nest_flags = []
-    if args.verbose or cfg.get("verbose"):
+    if args.verbose:
         nest_flags.append("-v")
-    if args.join_segments or cfg.get("join_segments"):
+    if args.join_segments:
         nest_flags.append("-j")
-    if args.fill_gaps or cfg.get("fill_gaps"):
+    if args.fill_gaps:
         nest_flags.append("--fill-gaps")
     if args.pop is not None:
         nest_flags += ["--pop", str(args.pop)]
-    elif cfg.get("pop_size"):
-        nest_flags += ["--pop", str(cfg.get("pop_size"))]
     if args.gen is not None:
         nest_flags += ["--gen", str(args.gen)]
-    elif cfg.get("generations"):
-        nest_flags += ["--gen", str(cfg.get("generations"))]
     if args.rot is not None:
         nest_flags += ["--rot", str(args.rot)]
-    elif cfg.get("rot"):
-        nest_flags += ["--rot", str(cfg.get("rot"))]
-    if args.polish is not None or cfg.get("polish"):
-        polish = args.polish if args.polish is not None else cfg.get("polish")
+    if args.polish is not None:
+        polish = args.polish
         nest_flags += ["--polish", str(polish)]
 
     dxf_files = []

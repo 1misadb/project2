@@ -4,7 +4,6 @@ import math
 import sys
 import ezdxf
 from ezdxf.units import InsertUnits, conversion_factor
-from config_util import load_config
 
 def dist(p, q):
     return math.hypot(p[0] - q[0], p[1] - q[1])
@@ -159,13 +158,11 @@ def parse_args(argv=None):
     parser.add_argument("input")
     parser.add_argument("output")
     parser.add_argument("repeat", nargs="?", default="repeat=1")
-    parser.add_argument("--config", default="config.yaml")
     return parser.parse_args(argv)
 
 
 def main(argv=None):
     args = parse_args(argv)
-    cfg = load_config(args.config)
     in_dxf = args.input
     out_json = args.output
     repeat = 1
@@ -175,7 +172,7 @@ def main(argv=None):
         except Exception:
             print("Invalid repeat argument, must be repeat=N")
             return 1
-    tol = cfg.get("tolerance", 0.05)
+    tol = 0.05
     details = extract_all_details(in_dxf, tol=tol)
     if repeat > 1:
         details = details * repeat

@@ -89,7 +89,7 @@ def main(argv=None):
         print(f"[PY] JSON generated: {json_out}")
         json_files.append(str(json_out))
 
-    nest_binary = "nest.exe" if os.name == "nt" else "./nest"
+    nest_binary = os.path.abspath("Release/nest.exe")
     tasks = []
     for strat in strategies:
         for r in range(runs):

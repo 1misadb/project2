@@ -1,0 +1,17 @@
+cuda_kernels.dir\debug\overlap_gpu.obj
+cuda_kernels.dir\debug\nfp_gpu.obj
+c:\users\user\nesting-cli-test\cmakefiles\generate.stamp
+c:\users\user\nesting-cli-test\debug\cuda_kernels.lib
+c:\users\user\nesting-cli-test\cuda_kernels.dir\debug\nfp_gpu.cu.cache
+c:\users\user\nesting-cli-test\cuda_kernels.dir\debug\overlap_gpu.cu.cache
+c:\users\user\nesting-cli-test\cuda_kernels.dir\debug\nfp_gpu.obj
+c:\users\user\nesting-cli-test\cuda_kernels.dir\debug\overlap_gpu.obj
+c:\users\user\nesting-cli-test\debug\cuda_kernels.pdb
+c:\users\user\nesting-cli-test\cuda_kernels.dir\debug\cuda_kernels.tlog\cudacompile.read.1u.tlog
+c:\users\user\nesting-cli-test\cuda_kernels.dir\debug\cuda_kernels.tlog\cudacompile.write.1u.tlog
+c:\users\user\nesting-cli-test\cuda_kernels.dir\debug\cuda_kernels.tlog\custombuild.command.1.tlog
+c:\users\user\nesting-cli-test\cuda_kernels.dir\debug\cuda_kernels.tlog\custombuild.read.1.tlog
+c:\users\user\nesting-cli-test\cuda_kernels.dir\debug\cuda_kernels.tlog\custombuild.write.1.tlog
+c:\users\user\nesting-cli-test\cuda_kernels.dir\debug\cuda_kernels.tlog\lib-link.read.1.tlog
+c:\users\user\nesting-cli-test\cuda_kernels.dir\debug\cuda_kernels.tlog\lib-link.write.1.tlog
+c:\users\user\nesting-cli-test\cuda_kernels.dir\debug\cuda_kernels.tlog\lib.command.1.tlog

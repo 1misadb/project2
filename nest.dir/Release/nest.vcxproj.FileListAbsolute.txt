@@ -1,2 +1,0 @@
-C:\Users\User\nesting-cli-test\Release\tbb12.dll
-C:\Users\User\nesting-cli-test\nest.dir\Release\nest.vcxproj.Up2Date

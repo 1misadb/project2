@@ -32,12 +32,10 @@ def test_load_config_missing(tmp_path):
     assert cfg == {}
 
 
-def test_default_and_override(tmp_path):
+def test_load_config_ignored(tmp_path):
     cfg_path = tmp_path / 'cfg.yaml'
     cfg_path.write_text('sheet: 50x50\niterations: 2')
-    args = parse_args(['-s','100x100','part.dxf','--config',str(cfg_path)])
     cfg = load_config(cfg_path)
-    assert cfg['sheet'] == '50x50'
-    assert args.sheet == '100x100'
+    assert cfg == {}
 
 

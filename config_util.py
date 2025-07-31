@@ -1,11 +1,13 @@
-import yaml
-from pathlib import Path
+"""Placeholder utilities for configuration handling.
 
-DEFAULT_CONFIG = Path('config.JSON')
+This project no longer reads configuration files. ``load_config`` is kept
+for compatibility but always returns an empty dictionary.
+"""
 
-def load_config(path=None):
-    path = Path(path or DEFAULT_CONFIG)
-    if path.exists():
-        with open(path, 'r', encoding='utf-8') as f:
-            return yaml.safe_load(f) or {}
+
+def load_config(_=None):
+    """Return an empty configuration dict.
+
+    Parameters are ignored because loading from files is not supported.
+    """
     return {}

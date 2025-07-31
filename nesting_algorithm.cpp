@@ -155,7 +155,7 @@ constexpr double TOL_MM = 1.0;
 struct CLI{
     double W = 0, H = 0;
     int rot = DEFAULT_ROT_STEP;
-    double grid = 0.01;
+    double grid = 5;
     std::string out = "layout.csv";
     std::string dxf = "layout.dxf"; // output DXF file
     std::vector<std::string> files;
@@ -1221,8 +1221,6 @@ static std::vector<Place> greedy(
                     }
                     Paths64 moved = movePaths(op.poly, c.x, c.y);
                     bool clash = false;
-                    std::vector<Paths64> gpuShapes;
-                    std::vector<OverlapKey> gpuKeys;
                     for (size_t pi = 0; pi < placedShapes.size(); ++pi) {
                         const auto& pl = placedShapes[pi];
                         Rect64 bbPl = getBBox(pl);
@@ -1231,9 +1229,10 @@ static std::vector<Place> greedy(
                             bbPl.top   < bbMoved.bottom || bbPl.bottom > bbMoved.top)
                             continue;
                         overlap_checks++;
-                        const auto& po = placedOrient[pi];
-                        const auto& ps = placedShapes[pi];
+                        const auto& po = placedOrient[pi]; // ориентация уже размещённой детали
+                        const auto& ps = placedShapes[pi]; // shape уже размещённой детали
                         int64_t cx = I64mm(c.x), cy = I64mm(c.y);
+
                         int64_t xb = bbPl.left;
                         int64_t yb = bbPl.bottom;
                         OverlapKey key = makeKey(
@@ -1251,28 +1250,25 @@ static std::vector<Place> greedy(
                                 found = true;
                             }
                         }
-                        if (found) {
-                            if (ov) { clash = true; break; }
-                            else continue;
-                        }
-                        gpuShapes.push_back(ps);
-                        gpuKeys.push_back(key);
-                    }
-                    if (!clash && !gpuShapes.empty()) {
-                        auto results = overlapBatchGPU(moved, gpuShapes);
-                        for (size_t gi = 0; gi < results.size(); ++gi) {
-                            bool ov = results[gi];
-                            {
-                                std::lock_guard<std::mutex> lock(overlapMutex);
-                                overlapCache[gpuKeys[gi]] = ov;
-                                overlapOrder.push_back(gpuKeys[gi]);
-                                if (overlapOrder.size() > OVERLAP_CACHE_MAX) {
-                                    OverlapKey old = overlapOrder.front();
-                                    overlapOrder.pop_front();
-                                    overlapCache.unsafe_erase(old);
-                                }
+                        if (!found) {
+                            ov = overlap(ps, moved);
+                            std::lock_guard<std::mutex> lock(overlapMutex);
+                            overlapCache[key] = ov;
+                            overlapOrder.push_back(key);
+                            if (overlapOrder.size() > OVERLAP_CACHE_MAX) {
+                                OverlapKey old = overlapOrder.front();
+                                overlapOrder.pop_front();
+                                overlapCache.unsafe_erase(old);
                             }
-                            if (ov) { clash = true; break; }
+                        }
+
+                        // --- дальше условия такие же, как были ---
+                        if (bbPl.right < bb.left || bbPl.left > bb.right ||
+                            bbPl.top < bb.bottom || bbPl.bottom > bb.top)
+                            continue;
+                        if (ov) {
+                            clash = true;
+                            break;
                         }
                     }
                     if (clash) continue;
@@ -1805,6 +1801,14 @@ std::vector<Place> genetic_nesting(
 #ifndef NEST_UNIT_TEST
 int main(int argc, char* argv[])
 {
+    #ifdef USE_CUDA
+    if (cuda_available())
+        std::cout << "[INFO] CUDA GPU detected and will be used for overlap checks\n";
+    else
+        std::cout << "[INFO] CUDA NOT detected, using CPU only\n";
+    #else
+        std::cout << "[INFO] CUDA NOT compiled in this binary, only CPU\n";
+    #endif
     try {
         CLI cli = parse(argc, argv);
         gVerbose = cli.verbose;

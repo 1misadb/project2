@@ -96,6 +96,13 @@
         "xtree": "cpp",
         "xutility": "cpp",
         "filesystem": "cpp",
-        "valarray": "cpp"
-    }
+        "valarray": "cpp",
+        "expected": "cpp",
+        "resumable": "cpp",
+        "future": "cpp",
+        "regex": "cpp"
+    },
+    "cmake.configureArgs": [
+        "-DTBB_DIR=C:/Users/User/vcpkg/installed/x64-windows/share/tbb"
+    ]
 }

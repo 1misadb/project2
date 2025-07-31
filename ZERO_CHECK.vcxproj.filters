@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="C:\Users\User\nesting-cli-test\CMakeFiles\bc3c3ebe8b7e3192041499a857460076\generate.stamp.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{F9305196-D88E-3097-B245-165F49719A6E}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

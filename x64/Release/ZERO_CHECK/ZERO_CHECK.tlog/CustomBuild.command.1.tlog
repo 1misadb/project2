@@ -1,0 +1,10 @@
+^C:\USERS\USER\NESTING-CLI-TEST\CMAKEFILES\BC3C3EBE8B7E3192041499A857460076\GENERATE.STAMP.RULE
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/Users/User/nesting-cli-test -BC:/Users/User/nesting-cli-test --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file C:/Users/User/nesting-cli-test/nesting.sln
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.14)
 project(nesting)
 set(CMAKE_CXX_STANDARD 17)
-find_package(TBB REQUIRED)
+find_package(TBB 2022.1 REQUIRED)
 find_package(CUDAToolkit)
 add_library(clipper3
     clipper3/src/clipper.engine.cpp
@@ -27,6 +27,10 @@ add_executable(nest
 )
 target_include_directories(nest PRIVATE . clipper3 spdlog/include)
 target_link_libraries(nest PRIVATE geometry TBB::tbb)
+
+if (MSVC)
+    target_compile_options(nest PRIVATE /utf-8)
+endif()
 
 add_executable(test_overlap tests/test_overlap.cpp)
 target_include_directories(test_overlap PRIVATE . clipper3)

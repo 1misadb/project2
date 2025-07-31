@@ -16,7 +16,7 @@ TEST_CASE("overlap bvh benchmark") {
 TEST_CASE("cuda batch vs cpu") {
     Paths64 base = { { {0,0},{100,0},{100,100},{0,100} } };
     std::vector<Paths64> others;
-    for(int i=0;i<256;i++) others.push_back(movePaths(base,i*50,i*50));
+    for(int i=0;i<10000;i++) others.push_back(movePaths(base,i*50,i*50));
     if(!cuda_available()) {
         SUCCEED("cuda not available");
         return;

@@ -186,3 +186,118 @@ std::vector<bool> overlapBatchGPU(const Paths64& cand,
     return r;
 #endif
 }
+
+// ---- Convex helpers ----
+static long long cross64(const Point64& a, const Point64& b, const Point64& c){
+    return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+}
+
+bool isConvex(const Path64& p){
+    if(p.size() < 4) return true;
+    long long prev = 0;
+    size_t n = p.size();
+    for(size_t i=0;i<n;++i){
+        long long cr = cross64(p[i], p[(i+1)%n], p[(i+2)%n]);
+        if(cr != 0){
+            if(prev != 0 && (cr > 0) != (prev > 0)) return false;
+            prev = cr;
+        }
+    }
+    return true;
+}
+
+Path64 convexHull(const std::vector<Point64>& pts){
+    if(pts.size() < 3) return Path64(pts.begin(), pts.end());
+    std::vector<Point64> p = pts;
+    std::sort(p.begin(), p.end(), [](const Point64& a, const Point64& b){
+        return a.x < b.x || (a.x == b.x && a.y < b.y);
+    });
+    std::vector<Point64> lower, upper;
+    for(const auto& pt : p){
+        while(lower.size() >= 2 && cross64(lower[lower.size()-2], lower.back(), pt) <= 0)
+            lower.pop_back();
+        lower.push_back(pt);
+    }
+    for(auto it=p.rbegin(); it!=p.rend(); ++it){
+        while(upper.size() >= 2 && cross64(upper[upper.size()-2], upper.back(), *it) <= 0)
+            upper.pop_back();
+        upper.push_back(*it);
+    }
+    lower.pop_back();
+    upper.pop_back();
+    lower.insert(lower.end(), upper.begin(), upper.end());
+    return Path64(lower.begin(), lower.end());
+}
+
+#ifdef USE_CUDA
+struct GPUPair { GPUPath a; GPUPath b; int start; };
+extern "C" void minkowskiKernelLauncher(const long long* ax,const long long* ay,
+                                         const long long* bx,const long long* by,
+                                         const GPUPair* pairs,int pairCount,
+                                         long long* outx,long long* outy);
+#endif
+
+std::vector<Paths64> minkowskiBatchGPU(const std::vector<Path64>& A,
+                                       const std::vector<Path64>& B){
+#ifdef USE_CUDA
+    if(!cuda_available()){
+        std::vector<Paths64> out(A.size());
+        for(size_t i=0;i<A.size();++i) out[i]=MinkowskiSum(A[i], B[i], true);
+        return out;
+    }
+    size_t pairCount = A.size();
+    std::vector<long long> ax, ay, bx, by;
+    std::vector<GPUPath> ainfo(pairCount), binfo(pairCount);
+    for(size_t i=0;i<pairCount;++i){
+        ainfo[i] = { (int)ax.size(), (int)A[i].size() };
+        for(auto pt:A[i]){ ax.push_back(pt.x); ay.push_back(pt.y); }
+    }
+    for(size_t i=0;i<pairCount;++i){
+        binfo[i] = { (int)bx.size(), (int)B[i].size() };
+        for(auto pt:B[i]){ bx.push_back(pt.x); by.push_back(pt.y); }
+    }
+    std::vector<GPUPair> pairs(pairCount);
+    size_t out_sz = 0;
+    for(size_t i=0;i<pairCount;++i){
+        pairs[i] = { ainfo[i], binfo[i], (int)out_sz };
+        out_sz += (size_t)ainfo[i].size * (size_t)binfo[i].size;
+    }
+    long long *d_ax,*d_ay,*d_bx,*d_by,*d_outx,*d_outy; GPUPair* d_pairs;
+    cudaMalloc(&d_ax, ax.size()*sizeof(long long));
+    cudaMalloc(&d_ay, ay.size()*sizeof(long long));
+    cudaMalloc(&d_bx, bx.size()*sizeof(long long));
+    cudaMalloc(&d_by, by.size()*sizeof(long long));
+    cudaMemcpy(d_ax, ax.data(), ax.size()*sizeof(long long), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_ay, ay.data(), ay.size()*sizeof(long long), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_bx, bx.data(), bx.size()*sizeof(long long), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_by, by.data(), by.size()*sizeof(long long), cudaMemcpyHostToDevice);
+    cudaMalloc(&d_pairs, pairs.size()*sizeof(GPUPair));
+    cudaMemcpy(d_pairs, pairs.data(), pairs.size()*sizeof(GPUPair), cudaMemcpyHostToDevice);
+    cudaMalloc(&d_outx, out_sz*sizeof(long long));
+    cudaMalloc(&d_outy, out_sz*sizeof(long long));
+
+    minkowskiKernelLauncher(d_ax,d_ay,d_bx,d_by,d_pairs,(int)pairCount,d_outx,d_outy);
+
+    std::vector<long long> outx(out_sz), outy(out_sz);
+    cudaMemcpy(outx.data(), d_outx, out_sz*sizeof(long long), cudaMemcpyDeviceToHost);
+    cudaMemcpy(outy.data(), d_outy, out_sz*sizeof(long long), cudaMemcpyDeviceToHost);
+    cudaFree(d_ax); cudaFree(d_ay); cudaFree(d_bx); cudaFree(d_by);
+    cudaFree(d_pairs); cudaFree(d_outx); cudaFree(d_outy);
+
+    std::vector<Paths64> res(pairCount);
+    for(size_t i=0;i<pairCount;++i){
+        size_t count = (size_t)ainfo[i].size * (size_t)binfo[i].size;
+        std::vector<Point64> tmp; tmp.reserve(count);
+        for(size_t j=0;j<count;++j){
+            tmp.push_back({ outx[pairs[i].start + j], outy[pairs[i].start + j] });
+        }
+        Path64 hull = convexHull(tmp);
+        res[i] = { hull };
+    }
+    return res;
+#else
+    std::vector<Paths64> out(A.size());
+    for(size_t i=0;i<A.size();++i) out[i]=MinkowskiSum(A[i], B[i], true);
+    return out;
+#endif
+}

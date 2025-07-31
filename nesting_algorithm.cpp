@@ -996,6 +996,46 @@ static std::vector<std::vector<Orient>> makeOrient(const std::vector<RawPart>& p
     return all;
 }
 
+// Precompute NFPs on GPU in batches for convex pairs
+static void precomputeNFPGPU(const std::vector<std::vector<Orient>>& orients,
+                             LRUCache<Key, Paths64>& cache){
+#ifdef USE_CUDA
+    const size_t BATCH = 128;
+    std::vector<Path64> batchA, batchB;
+    std::vector<Key> keys;
+    for(const auto& oa : orients){
+        for(const auto& a : oa){
+            for(const auto& ob : orients){
+                for(const auto& b : ob){
+                    Key k = kfn(a.id,a.ang,b.id,b.ang);
+                    Paths64 tmp;
+                    if(cache.get(k,tmp)) continue;
+                    Path64 pa = SimplifyPath(a.poly[0], 0.05 * SCALE);
+                    Path64 pb = SimplifyPath(b.poly[0], 0.05 * SCALE);
+                    if(!isConvex(pa) || !isConvex(pb)){
+                        auto res = MinkowskiSum(pa, pb, true);
+                        cache.put(k, res);
+                        continue;
+                    }
+                    batchA.push_back(pa); batchB.push_back(pb); keys.push_back(k);
+                    if(batchA.size() >= BATCH){
+                        auto sols = minkowskiBatchGPU(batchA, batchB);
+                        for(size_t i=0;i<sols.size();++i) cache.put(keys[i], sols[i]);
+                        batchA.clear(); batchB.clear(); keys.clear();
+                    }
+                }
+            }
+        }
+    }
+    if(!batchA.empty()){
+        auto sols = minkowskiBatchGPU(batchA, batchB);
+        for(size_t i=0;i<sols.size();++i) cache.put(keys[i], sols[i]);
+    }
+#else
+    (void)orients; (void)cache;
+#endif
+}
+
 
 // ───────── NFP cache ─────────
 static const Paths64& nfp(
@@ -1838,6 +1878,9 @@ int main(int argc, char* argv[])
 
         // ─── Предрасчёт поворотов ────────────────────────────────────────────
         const auto all_orients = makeOrient(parts, cli.rot);
+
+        // Precompute NFP cache using GPU where possible
+        precomputeNFPGPU(all_orients, sharedNFP);
 
         // ─── Greedy‑итерации (параллельно) ───────────────────────────────────
         const int total_iter = std::max(1, cli.iter);

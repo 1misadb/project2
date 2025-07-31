@@ -329,6 +329,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
   </ItemGroup>
   <ItemGroup>
     <CudaCompile Include="overlap_gpu.cu" />
+    <CudaCompile Include="nfp_gpu.cu" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="C:\Users\User\nesting-cli-test\ZERO_CHECK.vcxproj">

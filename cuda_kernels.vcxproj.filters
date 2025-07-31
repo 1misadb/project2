@@ -4,6 +4,9 @@
     <CudaCompile Include="overlap_gpu.cu">
       <Filter>Source Files</Filter>
     </CudaCompile>
+    <CudaCompile Include="nfp_gpu.cu">
+      <Filter>Source Files</Filter>
+    </CudaCompile>
   </ItemGroup>
   <ItemGroup>
     <CustomBuild Include="C:\Users\User\nesting-cli-test\CMakeLists.txt" />

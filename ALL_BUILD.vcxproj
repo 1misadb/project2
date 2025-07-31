@@ -194,6 +194,10 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
       <Project>{4CBEFA80-D0A0-3A4A-ACB6-C63C8DFC407F}</Project>
       <Name>test_benchmark</Name>
     </ProjectReference>
+    <ProjectReference Include="C:\Users\User\nesting-cli-test\test_minkowski.vcxproj">
+      <Project>{47A34045-4B88-3071-B6F8-46F2DB594F5B}</Project>
+      <Name>test_minkowski</Name>
+    </ProjectReference>
     <ProjectReference Include="C:\Users\User\nesting-cli-test\test_overlap.vcxproj">
       <Project>{B716E3DA-B268-3F7C-BF79-18C56A7ACB2B}</Project>
       <Name>test_overlap</Name>

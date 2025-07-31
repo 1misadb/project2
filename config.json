@@ -1,21 +1,3 @@
 {
-  "sheet": "2500x1250",
-  "rot": 10,
-  "grid": 0.01,
-  "out": "layout.csv",
-  "dxf": "layout.dxf",
-  "iterations": 1,
-  "runs": 1,
-  "generations": 50,
-  "pop_size": 50,
-  "polish": 0,
-  "strategy": "area",
-  "cand_limit": 2000,
-  "nfp_limit": 20000,
-  "overlap_limit": 20000,
-  "time_limit": 3000.0,
-  "verbose": false,
-  "fill_gaps": false,
-  "kerf": 0.0,
-  "gap": 0.0
+
 }

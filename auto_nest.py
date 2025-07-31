@@ -106,7 +106,7 @@ def main(argv=None):
         for r in range(runs):
             out_csv = f"lay_{r}_{strat}.csv"
             out_dxf = f"layout_{r}_{strat}.dxf"
-            cmd = [nest_binary, "--config", "config.json", "-s", sheet]
+            cmd = [nest_binary, "-s", sheet]
             if iterations:
                 cmd += ["--iter", str(iterations)]
             if nums:

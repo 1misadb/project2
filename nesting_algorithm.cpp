@@ -998,39 +998,45 @@ static std::vector<std::vector<Orient>> makeOrient(const std::vector<RawPart>& p
 
 // Precompute NFPs on GPU in batches for convex pairs
 static void precomputeNFPGPU(const std::vector<std::vector<Orient>>& orients,
-                             LRUCache<Key, Paths64>& cache){
+                             LRUCache<Key, Paths64>& cache) {
 #ifdef USE_CUDA
     const size_t BATCH = 128;
     std::vector<Path64> batchA, batchB;
     std::vector<Key> keys;
-    for(const auto& oa : orients){
-        for(const auto& a : oa){
-            for(const auto& ob : orients){
-                for(const auto& b : ob){
-                    Key k = kfn(a.id,a.ang,b.id,b.ang);
+    size_t gpu_cnt = 0, cpu_cnt = 0;
+    for (const auto& oa : orients) {
+        for (const auto& a : oa) {
+            for (const auto& ob : orients) {
+                for (const auto& b : ob) {
+                    Key k = kfn(a.id, a.ang, b.id, b.ang);
                     Paths64 tmp;
-                    if(cache.get(k,tmp)) continue;
+                    if (cache.get(k, tmp)) continue;
                     Path64 pa = SimplifyPath(a.poly[0], 0.05 * SCALE);
                     Path64 pb = SimplifyPath(b.poly[0], 0.05 * SCALE);
-                    if(!isConvex(pa) || !isConvex(pb)){
+                    if (!isConvex(pa) || !isConvex(pb)) {
                         auto res = MinkowskiSum(pa, pb, true);
                         cache.put(k, res);
+                        ++cpu_cnt;
                         continue;
                     }
                     batchA.push_back(pa); batchB.push_back(pb); keys.push_back(k);
-                    if(batchA.size() >= BATCH){
+                    ++gpu_cnt;
+                    if (batchA.size() >= BATCH) {
                         auto sols = minkowskiBatchGPU(batchA, batchB);
-                        for(size_t i=0;i<sols.size();++i) cache.put(keys[i], sols[i]);
+                        for (size_t i = 0; i < sols.size(); ++i)
+                            cache.put(keys[i], sols[i]);
                         batchA.clear(); batchB.clear(); keys.clear();
                     }
                 }
             }
         }
     }
-    if(!batchA.empty()){
+    if (!batchA.empty()) {
         auto sols = minkowskiBatchGPU(batchA, batchB);
-        for(size_t i=0;i<sols.size();++i) cache.put(keys[i], sols[i]);
+        for (size_t i = 0; i < sols.size(); ++i)
+            cache.put(keys[i], sols[i]);
     }
+    std::cerr << "[NFP-GPU] GPU: " << gpu_cnt << " пар, CPU: " << cpu_cnt << " пар" << std::endl;
 #else
     (void)orients; (void)cache;
 #endif
@@ -1402,12 +1408,10 @@ static void printHelp(const char* exe){
              << "  --fill-gaps       Enable gap nesting\n";
 }
 
-// Parse command line arguments
 static CLI parse(int ac, char** av){
     CLI c;
     cxxopts::Options options(av[0], "Nesting algorithm");
     options.add_options()
-        ("config", "config file", cxxopts::value<std::string>()->default_value("config.yaml"))
         ("s,sheet", "sheet WxH", cxxopts::value<std::string>())
         ("r,rot", "rotation step", cxxopts::value<int>())
         ("o,out", "output csv", cxxopts::value<std::string>())
@@ -1428,45 +1432,38 @@ static CLI parse(int ac, char** av){
         std::exit(0);
     }
 
-    // load config
-    std::string cfg_path = result["config"].as<std::string>();
-    nlohmann::json cfg;
-    std::ifstream cf(cfg_path);
-    if(cf){
-        try{
-            cf >> cfg;
-        }catch(const std::exception& e){
-            std::cerr << "[WARN] config " << cfg_path << ": " << e.what() << "\n";
-        }
-    }
-
-    auto sheet = cfg.value("sheet", std::string());
-    if(result.count("sheet")) sheet = result["sheet"].as<std::string>();
-    if(!sheet.empty()){
+    // sheet WxH
+    if(result.count("sheet")) {
+        auto sheet = result["sheet"].as<std::string>();
         auto x = sheet.find('x');
         c.W = std::stod(sheet.substr(0,x));
         c.H = std::stod(sheet.substr(x+1));
     }
-    c.rot = result.count("rot") ? result["rot"].as<int>() : cfg.value("rot", DEFAULT_ROT_STEP);
-    c.out = result.count("out") ? result["out"].as<std::string>() : cfg.value("out", std::string("layout.csv"));
-    c.dxf = result.count("dxf") ? result["dxf"].as<std::string>() : cfg.value("dxf", std::string("layout.dxf"));
-    c.iter = result.count("iter") ? result["iter"].as<int>() : cfg.value("iterations",1);
-    c.pop_size = result.count("pop") ? result["pop"].as<int>() : cfg.value("pop_size",50);
-    c.generations = result.count("gen") ? result["gen"].as<int>() : cfg.value("generations",50);
-    c.strategy = result.count("strategy") ? result["strategy"].as<std::string>() : cfg.value("strategy","area");
-    gKerf = result.count("kerf") ? result["kerf"].as<double>() : cfg.value("kerf",0.0);
-    gGap  = result.count("gap")  ? result["gap"].as<double>()  : cfg.value("gap",0.0);
-    c.verbose = result["verbose"].as<bool>();
-    c.fill_gaps = result.count("fill-gaps") ? true : cfg.value("fill_gaps", false);
 
+    // Заполнение с дефолтами 
+    c.rot         = result.count("rot")      ? result["rot"].as<int>()           : DEFAULT_ROT_STEP;
+    c.out         = result.count("out")      ? result["out"].as<std::string>()   : "layout.csv";
+    c.dxf         = result.count("dxf")      ? result["dxf"].as<std::string>()   : "layout.dxf";
+    c.iter        = result.count("iter")     ? result["iter"].as<int>()          : 1;
+    c.pop_size    = result.count("pop")      ? result["pop"].as<int>()           : 50;
+    c.generations = result.count("gen")      ? result["gen"].as<int>()           : 50;
+    c.strategy    = result.count("strategy") ? result["strategy"].as<std::string>() : "area";
+    gKerf         = result.count("kerf")     ? result["kerf"].as<double>()       : 0.0;
+    gGap          = result.count("gap")      ? result["gap"].as<double>()        : 0.0;
+    c.verbose     = result["verbose"].as<bool>();
+    c.fill_gaps   = result.count("fill-gaps");
+
+    // Файлы (только .json)
     for(int i=1;i<ac;++i){
         std::string a = av[i];
-        if(a.size() && a[0] != '-') c.files.push_back(a);
+        if(a.size() && a[0] != '-' && a.find(".json") != std::string::npos)
+            c.files.push_back(a);
     }
     if(c.W<=0 || c.H<=0 || c.files.empty())
         throw std::runtime_error("use --help for usage");
     return c;
 }
+
 
 std::string PolylineToDXF(const Path64& path) {
     std::ostringstream ss;
@@ -1849,6 +1846,9 @@ int main(int argc, char* argv[])
     #else
         std::cout << "[INFO] CUDA NOT compiled in this binary, only CPU\n";
     #endif
+    
+
+
     try {
         CLI cli = parse(argc, argv);
         gVerbose = cli.verbose;

@@ -23,3 +23,9 @@ std::vector<BVHNode> buildBVH(const Paths64& paths);
 bool overlapBVH(const std::vector<BVHNode>& treeA, const Paths64& pa,
                 const std::vector<BVHNode>& treeB, const Paths64& pb);
 
+// --- convex utilities and GPU Minkowski ---
+bool isConvex(const Path64& p);
+Path64 convexHull(const std::vector<Point64>& pts);
+std::vector<Paths64> minkowskiBatchGPU(const std::vector<Path64>& A,
+                                       const std::vector<Path64>& B);
+

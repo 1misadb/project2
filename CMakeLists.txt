@@ -1,7 +1,8 @@
 cmake_minimum_required(VERSION 3.14)
 project(nesting)
 set(CMAKE_CXX_STANDARD 17)
-find_package(TBB 2022.1 REQUIRED)
+# Relax TBB version requirement for broader compatibility
+find_package(TBB REQUIRED)
 find_package(CUDAToolkit)
 add_library(clipper3
     clipper3/src/clipper.engine.cpp
@@ -14,7 +15,7 @@ target_include_directories(geometry PUBLIC . clipper3)
 target_link_libraries(geometry PUBLIC clipper3)
 if(CUDAToolkit_FOUND)
     enable_language(CUDA)
-    add_library(cuda_kernels STATIC overlap_gpu.cu)
+    add_library(cuda_kernels STATIC overlap_gpu.cu nfp_gpu.cu)
     target_link_libraries(cuda_kernels PUBLIC CUDA::cudart)
     target_compile_definitions(cuda_kernels PUBLIC USE_CUDA=1)
     target_include_directories(cuda_kernels PUBLIC .)
@@ -39,3 +40,7 @@ target_link_libraries(test_overlap PRIVATE geometry TBB::tbb)
 add_executable(test_benchmark tests/test_benchmark.cpp)
 target_include_directories(test_benchmark PRIVATE . clipper3)
 target_link_libraries(test_benchmark PRIVATE geometry TBB::tbb)
+
+add_executable(test_minkowski tests/test_minkowski_gpu.cpp)
+target_include_directories(test_minkowski PRIVATE . clipper3)
+target_link_libraries(test_minkowski PRIVATE geometry TBB::tbb)

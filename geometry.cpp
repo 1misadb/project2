@@ -121,7 +121,7 @@ bool overlapBVH(const std::vector<BVHNode>& treeA, const Paths64& pa,
 struct GPUPath { int start; int size; };
 struct GPUShape { int start; int size; };
 extern "C" void overlapKernelLauncher(const long long* d_xs, const long long* d_ys, const GPUPath* d_paths,
-                                      GPUShape d_cand, const GPUShape* d_shapes, int n, uint8_t* d_out);
+                                      GPUShape d_cand, const GPUShape* d_shapes, int n, int* d_out);
 #endif
 
 bool cuda_available(){
@@ -158,7 +158,7 @@ std::vector<bool> overlapBatchGPU(const Paths64& cand,
         }
         shapes.push_back(s);
     }
-    long long* d_xs; long long* d_ys; GPUPath* d_paths; GPUShape* d_shapes; uint8_t* d_out;
+    long long* d_xs; long long* d_ys; GPUPath* d_paths; GPUShape* d_shapes; int* d_out;
     size_t pts_sz=xs.size()*sizeof(long long); cudaMalloc(&d_xs,pts_sz); cudaMalloc(&d_ys,pts_sz);
     cudaMemcpy(d_xs,xs.data(),pts_sz,cudaMemcpyHostToDevice);
     cudaMemcpy(d_ys,ys.data(),pts_sz,cudaMemcpyHostToDevice);
@@ -166,14 +166,14 @@ std::vector<bool> overlapBatchGPU(const Paths64& cand,
     cudaMemcpy(d_paths,paths.data(),paths.size()*sizeof(GPUPath),cudaMemcpyHostToDevice);
     cudaMalloc(&d_shapes,shapes.size()*sizeof(GPUShape));
     cudaMemcpy(d_shapes,shapes.data(),shapes.size()*sizeof(GPUShape),cudaMemcpyHostToDevice);
-    cudaMalloc(&d_out,shapes.size()*sizeof(uint8_t));
+    cudaMalloc(&d_out,shapes.size()*sizeof(int));
     GPUShape d_cand=candShape; // copy by value
 
     // <<<--- вот тут вызывем только launcher-обёртку!
     overlapKernelLauncher(d_xs, d_ys, d_paths, d_cand, d_shapes, (int)shapes.size(), d_out);
 
-    std::vector<uint8_t> res_raw(others.size());
-    cudaMemcpy(res_raw.data(), d_out, others.size()*sizeof(uint8_t), cudaMemcpyDeviceToHost);
+    std::vector<int> res_raw(others.size());
+    cudaMemcpy(res_raw.data(), d_out, others.size()*sizeof(int), cudaMemcpyDeviceToHost);
     std::vector<bool> res(others.size());
     for (size_t i = 0; i < others.size(); ++i)
         res[i] = (res_raw[i] != 0);

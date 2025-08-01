@@ -78,7 +78,7 @@ extern "C" {
 void overlapKernelLauncher(const long long* d_xs, const long long* d_ys, const GPUPath* d_paths,
     GPUShape d_cand, const GPUShape* d_shapes, int n, uint8_t* d_out)
 {
-    int threads = 128;
+    int threads = 512;
     int blocks = (n + threads - 1) / threads;
     overlapKernel<<<blocks, threads>>>(d_xs, d_ys, d_paths, d_cand, d_shapes, n, (bool*)d_out);
     cudaDeviceSynchronize();

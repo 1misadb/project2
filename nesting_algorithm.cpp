@@ -37,11 +37,11 @@
 #include <thread>
 #include <set>
 #ifdef _OPENMP
+#include <cuda_runtime.h>
 #include <omp.h>
 #endif
 #define _USE_MATH_DEFINES
 #include <math.h>
-
 #include "clipper3/clipper.h"
 #include "clipper3/clipper.minkowski.h"
 #include <json.hpp>
@@ -1872,6 +1872,11 @@ std::vector<Place> genetic_nesting(
 #ifndef NEST_UNIT_TEST
 int main(int argc, char* argv[])
 {
+#ifdef _OPENMP
+    std::cout << "OpenMP threads: " << omp_get_max_threads() << '\n';
+#else
+    std::cout << "OpenMP DISABLED\n";
+#endif
 #ifdef USE_CUDA
     cudaDeviceProp prop{};
     bool gpu = cuda_available();

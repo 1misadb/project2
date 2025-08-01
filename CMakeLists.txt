@@ -1,18 +1,27 @@
 cmake_minimum_required(VERSION 3.14)
 project(nesting)
 set(CMAKE_CXX_STANDARD 17)
-# Relax TBB version requirement for broader compatibility
-find_package(TBB REQUIRED)
+
+# --- DEPENDENCIES ---
+find_package(TBB CONFIG REQUIRED)
+
 find_package(CUDAToolkit)
+find_package(OpenMP REQUIRED)  # <-- добавляем OpenMP
+
+# --- CLIPPER3 LIBRARY ---
 add_library(clipper3
     clipper3/src/clipper.engine.cpp
     clipper3/src/clipper.offset.cpp
     clipper3/src/clipper.rectclip.cpp
 )
 target_include_directories(clipper3 PUBLIC clipper3)
+
+# --- GEOMETRY LIBRARY ---
 add_library(geometry geometry.cpp)
 target_include_directories(geometry PUBLIC . clipper3)
 target_link_libraries(geometry PUBLIC clipper3)
+
+# --- CUDA (OPTIONAL) ---
 if(CUDAToolkit_FOUND)
     enable_language(CUDA)
     add_library(cuda_kernels STATIC overlap_gpu.cu nfp_gpu.cu)
@@ -24,16 +33,26 @@ if(CUDAToolkit_FOUND)
     add_definitions(-DUSE_CUDA)
 endif()
 
-add_executable(nest
-    nesting_algorithm.cpp
-)
+# --- MAIN EXECUTABLE ---
+add_executable(nest nesting_algorithm.cpp)
 target_include_directories(nest PRIVATE . clipper3 spdlog/include)
 target_link_libraries(nest PRIVATE geometry TBB::tbb)
+target_link_libraries(nest PRIVATE TBB::tbb)
 
-if (MSVC)
-    target_compile_options(nest PRIVATE /utf-8)
+# --- OpenMP SUPPORT ---
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(nest PRIVATE OpenMP::OpenMP_CXX)
+    message(STATUS "OpenMP enabled")
 endif()
 
+# --- OPTIMIZATIONS & MSVC ---
+if(MSVC)
+    target_compile_options(nest PRIVATE /utf-8 /openmp)
+else()
+    target_compile_options(nest PRIVATE -O3 -fopenmp)
+endif()
+
+# --- TESTS ---
 add_executable(test_overlap tests/test_overlap.cpp)
 target_include_directories(test_overlap PRIVATE . clipper3)
 target_link_libraries(test_overlap PRIVATE geometry TBB::tbb)

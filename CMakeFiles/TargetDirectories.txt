@@ -1,9 +1,0 @@
-C:/Users/User/nesting-cli-test/CMakeFiles/clipper3.dir
-C:/Users/User/nesting-cli-test/CMakeFiles/geometry.dir
-C:/Users/User/nesting-cli-test/CMakeFiles/cuda_kernels.dir
-C:/Users/User/nesting-cli-test/CMakeFiles/nest.dir
-C:/Users/User/nesting-cli-test/CMakeFiles/test_overlap.dir
-C:/Users/User/nesting-cli-test/CMakeFiles/test_benchmark.dir
-C:/Users/User/nesting-cli-test/CMakeFiles/test_minkowski.dir
-C:/Users/User/nesting-cli-test/CMakeFiles/ALL_BUILD.dir
-C:/Users/User/nesting-cli-test/CMakeFiles/ZERO_CHECK.dir

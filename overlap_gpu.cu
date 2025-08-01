@@ -1,6 +1,7 @@
 #include <cuda_runtime.h>
 #include <stdio.h>
 #include "geometry.h"
+#include <assert.h>
 
 // ---------------------------------------------------------------------------------
 // Safety macro for CUDA API calls
@@ -85,6 +86,7 @@ __device__ bool polyOverlap(const long long* xs,const long long* ys,GPUPath a,GP
 // into res[shapeIdx]. `offsets` array contains prefix sums of edge pair counts
 // for each shape in `shapes`.
 // ---------------------------------------------------------------------------------
+#define DBG_LIMIT 20
 __global__ void overlapEdgesKernel(const long long* xs,const long long* ys,
                                   const GPUPath* paths,GPUShape cand,
                                   const GPUShape* shapes,int numShapes,
@@ -92,6 +94,8 @@ __global__ void overlapEdgesKernel(const long long* xs,const long long* ys,
     size_t gid = blockIdx.x * blockDim.x + threadIdx.x;
     size_t total = offsets[numShapes];
     if(gid >= total) return;
+    if(gid < DBG_LIMIT)
+        printf("[dbg %zu] total=%zu\n", gid, total);
 
     // determine shape index via binary search
     int l=0, r=numShapes;
@@ -102,8 +106,14 @@ __global__ void overlapEdgesKernel(const long long* xs,const long long* ys,
     int shapeIdx = l;
     if(shapeIdx >= numShapes) return; // safety
 
+    if(gid < DBG_LIMIT)
+        printf("[dbg %zu] shapeIdx=%d\n", gid, shapeIdx);
+
     size_t local = gid - offsets[shapeIdx];
     GPUShape sh = shapes[shapeIdx];
+    if(gid < DBG_LIMIT)
+        printf("[dbg %zu] local=%zu sh.start=%d sh.size=%d\n",
+               gid, local, sh.start, sh.size);
 
     for(int ia=0; ia<cand.size; ++ia){
         GPUPath pa = paths[cand.start + ia];
@@ -112,19 +122,27 @@ __global__ void overlapEdgesKernel(const long long* xs,const long long* ys,
             GPUPath pb = paths[sh.start + ib];
             if(pb.size < 2) continue;
             size_t cnt = (size_t)pa.size * (size_t)pb.size;
+            if(gid < DBG_LIMIT)
+                printf("[dbg %zu] ia=%d ib=%d cnt=%zu local=%zu\n",
+                       gid, ia, ib, cnt, local);
             if(local < cnt){
-                int ea = local / pb.size;
-                int eb = local % pb.size;
+                size_t ea64 = local / pb.size;
+                size_t eb64 = local % pb.size;
+                assert(ea64 < (size_t)pa.size);
+                assert(eb64 < (size_t)pb.size);
+                int ea = (int)ea64;
+                int eb = (int)eb64;
+                if(gid < DBG_LIMIT)
+                    printf("[dbg %zu] ea=%d eb=%d\n", gid, ea, eb);
                 Pt a1{ xs[pa.start + ea], ys[pa.start + ea] };
                 Pt a2{ xs[pa.start + (ea+1)%pa.size], ys[pa.start + (ea+1)%pa.size] };
                 Pt b1{ xs[pb.start + eb], ys[pb.start + eb] };
                 Pt b2{ xs[pb.start + (eb+1)%pb.size], ys[pb.start + (eb+1)%pb.size] };
                 bool hit = segInt(a1,a2,b1,b2);
                 if(hit) atomicExch(&res[shapeIdx], 1);
-                if(shapeIdx < 10 && gid < 10){
+                if(gid < DBG_LIMIT)
                     printf("edgePair dbg pair=%d tid=%zu ea=%d eb=%d hit=%d\n",
                            shapeIdx,gid,ea,eb,(int)hit);
-                }
                 return;
             }
             local -= cnt;
@@ -193,8 +211,12 @@ void overlapKernelLauncher(const long long* d_xs,const long long* d_ys,
         }
         h_off[i] = total;
         total += cnt;
+        if(i < 5)
+            printf("prefix[%d]=%zu cnt=%zu\n", i, h_off[i], cnt);
+        assert(h_off[i] <= total);
     }
     h_off[n] = total;
+    printf("prefix[%d]=%zu (total)\n", n, h_off[n]);
 
     size_t* d_off = nullptr;
     CUDA_CHECK(cudaMalloc(&d_off, (n+1)*sizeof(size_t)));

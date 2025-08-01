@@ -157,7 +157,7 @@ struct CLI{
     int rot = DEFAULT_ROT_STEP;
     double grid = 5;
     std::string out = "layout.csv";
-    std::string dxf = "layout.dxf"; // output DXF file
+    std::string dxf = "layout.dxf"; 
     std::vector<std::string> files;
     std::vector<int> nums;
     int num = 1;

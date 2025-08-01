@@ -106,7 +106,8 @@ __global__ void overlapEdgesKernel(const long long* xs,const long long* ys,
         if(gid >= offsets[m+1]) l = m + 1; else r = m;
     }
     int shapeIdx = l;
-    if(shapeIdx >= numShapes) return; // safety
+    // ensure we resolved valid shape index
+    assert(shapeIdx >= 0 && shapeIdx < numShapes);
 
     if(gid < DEBUG_LIMIT)
         printf("[dbg] tid=%zu shapeIdx=%d off=%zu offNext=%zu\n", gid, shapeIdx,
@@ -196,6 +197,7 @@ void overlapKernelLauncher(const long long* d_xs,const long long* d_ys,
                            const GPUPath* d_paths,GPUShape d_cand,
                            const GPUShape* d_shapes,int n,int* d_out){
     // bring shapes and paths back to host to compute prefix sums
+    assert(n > 0);
     std::vector<GPUShape> h_shapes(n);
     CUDA_CHECK(cudaMemcpy(h_shapes.data(), d_shapes, n*sizeof(GPUShape), cudaMemcpyDeviceToHost));
 
@@ -225,17 +227,35 @@ void overlapKernelLauncher(const long long* d_xs,const long long* d_ys,
         if(i > 0) assert(h_off[i] >= h_off[i-1]);
     }
     h_off[n] = total;
+    assert(total >= h_off[n-1]);
     if(n < DEBUG_LIMIT) printf("[host] off[%d]=%zu (total)\n", n, total);
 
+    // device memory for prefix sums
     size_t* d_off = nullptr;
     CUDA_CHECK(cudaMalloc(&d_off, (n+1)*sizeof(size_t)));
-    CUDA_CHECK(cudaMemcpy(d_off, h_off.data(), (n+1)*sizeof(size_t), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_off, h_off.data(), (n+1)*sizeof(size_t),
+                          cudaMemcpyHostToDevice));
+
+    // verify that the copy succeeded by reading the array back
+    std::vector<size_t> h_check(n+1, 0);
+    CUDA_CHECK(cudaMemcpy(h_check.data(), d_off, (n+1)*sizeof(size_t),
+                          cudaMemcpyDeviceToHost));
+    for(int i=0;i<=n;++i){
+        if(i < DEBUG_LIMIT)
+            printf("[check] off[%d]=%zu\n", i, h_check[i]);
+        if(h_check[i] != h_off[i]){
+            fprintf(stderr,"prefix mismatch at %d: host=%zu dev=%zu\n",
+                    i,h_off[i],h_check[i]);
+        }
+        assert(h_check[i] == h_off[i]);
+    }
 
     // zero result array
     CUDA_CHECK(cudaMemset(d_out, 0, n*sizeof(int)));
 
     int t = 256;
     int b = (total + t - 1) / t;
+    assert(t > 0 && b > 0);
     overlapEdgesKernel<<<b,t>>>(d_xs,d_ys,d_paths,d_cand,d_shapes,n,d_off,d_out);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());

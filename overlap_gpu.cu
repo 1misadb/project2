@@ -1,5 +1,6 @@
 #include <cuda_runtime.h>
-#include <assert.h>
+#include <cassert>
+#include <stdexcept>
 #include <stdio.h>
 #include "geometry.h"
 
@@ -16,14 +17,12 @@
 // Safety macro for CUDA API calls
 // ---------------------------------------------------------------------------------
 #ifndef CUDA_CHECK
-#define CUDA_CHECK(call)                                                   \
-    do {                                                                  \
-        cudaError_t err__ = (call);                                       \
-        if (err__ != cudaSuccess) {                                       \
-            fprintf(stderr,"CUDA error %s in %s at line %d\n",              \
-                    cudaGetErrorString(err__), __FILE__, __LINE__);       \
-        }                                                                 \
-    } while (0)
+#define CUDA_CHECK(x)                                                        \
+    do {                                                                    \
+        cudaError_t err = (x);                                              \
+        if (err != cudaSuccess)                                             \
+            throw std::runtime_error(cudaGetErrorString(err));              \
+    } while(0)
 #endif
 
 // ---------------------------------------------------------------------------------
@@ -99,6 +98,7 @@ __global__ void overlapEdgesKernel(const long long* xs,const long long* ys,
                                   const GPUPath* paths,GPUShape cand,
                                   const GPUShape* shapes,int numShapes,
                                   const size_t* offsets,int* res){
+    assert(offsets && "offsets pointer is null"); // <FIX offsets>
     size_t gid = blockIdx.x * blockDim.x + threadIdx.x;
     size_t total = offsets[numShapes];
     if(gid >= total) return;
@@ -260,6 +260,7 @@ void overlapKernelLauncher(const long long* d_xs,const long long* d_ys,
             }
         }
         h_off[i] = total;
+        if (cnt == 0) continue; // <FIX offsets>
         total += cnt;
         if(i < DEBUG_LIMIT)
             printf("[prefix] i=%d addr=%p val=%zu cnt=%zu\n", i, &h_off[i], h_off[i], cnt);
@@ -275,11 +276,7 @@ void overlapKernelLauncher(const long long* d_xs,const long long* d_ys,
 
     // device memory for prefix sums
     size_t* d_off = nullptr;
-    cudaError_t allocErr = cudaMalloc(&d_off, (n+1)*sizeof(size_t));
-    if(allocErr != cudaSuccess){
-        printf("[malloc-error] d_off %s\n", cudaGetErrorString(allocErr));
-    }
-    ASSERT_MSG(allocErr == cudaSuccess, "cudaMalloc d_off failed");
+    CUDA_CHECK(cudaMalloc(&d_off, (n+1)*sizeof(size_t))); // <FIX offsets>
     printf("[malloc] d_off=%p bytes=%zu\n", d_off, (n+1)*sizeof(size_t));
     CUDA_CHECK(cudaMemcpy(d_off, h_off.data(), (n+1)*sizeof(size_t),
                           cudaMemcpyHostToDevice));

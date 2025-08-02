@@ -135,13 +135,16 @@ bool cuda_available(){
 std::vector<bool> overlapBatchGPU(const Paths64& cand,
                                   const std::vector<Paths64>& others){
 #ifdef USE_CUDA
+    if(others.empty()) return {}; // <FIX offsets>
     if(!cuda_available()){ // fallback
         std::vector<bool> r(others.size());
         for(size_t i=0;i<others.size();++i) r[i]=overlap(cand, others[i]);
         return r;
     }
     std::vector<long long> xs,ys; xs.reserve(1024); ys.reserve(1024);
-    std::vector<GPUPath> paths; paths.reserve(256);
+    size_t totalPathCount = cand.size();
+    for(const auto& sh:others) totalPathCount += sh.size();
+    std::vector<GPUPath> paths; paths.reserve(totalPathCount); // <FIX offsets>
     GPUShape candShape{(int)paths.size(), (int)cand.size()};
     for(const auto& p:cand){
         GPUPath gp{(int)xs.size(), (int)p.size()};

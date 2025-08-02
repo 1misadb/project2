@@ -160,20 +160,27 @@ std::vector<bool> overlapBatchGPU(const Paths64& cand,
     }
     long long* d_xs; long long* d_ys; GPUPath* d_paths; GPUShape* d_shapes; int* d_out;
     size_t pts_sz=xs.size()*sizeof(long long); cudaMalloc(&d_xs,pts_sz); cudaMalloc(&d_ys,pts_sz);
+    printf("[gpu alloc] d_xs=%p d_ys=%p pts_sz=%zu\n", d_xs, d_ys, pts_sz);
     cudaMemcpy(d_xs,xs.data(),pts_sz,cudaMemcpyHostToDevice);
     cudaMemcpy(d_ys,ys.data(),pts_sz,cudaMemcpyHostToDevice);
     cudaMalloc(&d_paths,paths.size()*sizeof(GPUPath));
     cudaMemcpy(d_paths,paths.data(),paths.size()*sizeof(GPUPath),cudaMemcpyHostToDevice);
+    printf("[gpu alloc] d_paths=%p count=%zu\n", d_paths, paths.size());
     cudaMalloc(&d_shapes,shapes.size()*sizeof(GPUShape));
     cudaMemcpy(d_shapes,shapes.data(),shapes.size()*sizeof(GPUShape),cudaMemcpyHostToDevice);
+    printf("[gpu alloc] d_shapes=%p count=%zu\n", d_shapes, shapes.size());
     cudaMalloc(&d_out,shapes.size()*sizeof(int));
+    printf("[gpu alloc] d_out=%p count=%zu\n", d_out, shapes.size());
     GPUShape d_cand=candShape; // copy by value
 
     // <<<--- вот тут вызывем только launcher-обёртку!
+    printf("[call launcher] shapes=%zu cand.size=%d\n", shapes.size(), cand.size());
     overlapKernelLauncher(d_xs, d_ys, d_paths, d_cand, d_shapes, (int)shapes.size(), d_out);
 
     std::vector<int> res_raw(others.size());
     cudaMemcpy(res_raw.data(), d_out, others.size()*sizeof(int), cudaMemcpyDeviceToHost);
+    for(size_t i=0;i<others.size() && i<10;++i)
+        printf("[host result] i=%zu val=%d\n", i, res_raw[i]);
     std::vector<bool> res(others.size());
     for (size_t i = 0; i < others.size(); ++i)
         res[i] = (res_raw[i] != 0);

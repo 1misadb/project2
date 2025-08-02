@@ -5,6 +5,13 @@
 
 #define DEBUG_LIMIT 20
 
+#define ASSERT_MSG(cond, msg) do { \
+    if(!(cond)){ \
+        printf("ASSERT FAIL: %s\n", msg); \
+        assert(cond); \
+    } \
+} while(0)
+
 // ---------------------------------------------------------------------------------
 // Safety macro for CUDA API calls
 // ---------------------------------------------------------------------------------
@@ -96,8 +103,10 @@ __global__ void overlapEdgesKernel(const long long* xs,const long long* ys,
     size_t total = offsets[numShapes];
     if(gid >= total) return;
 
-    if(gid < DEBUG_LIMIT)
-        printf("[dbg] start tid=%zu total=%zu\n", gid, total);
+    if(gid < DEBUG_LIMIT){
+        printf("[kstart] tid=%zu total=%zu offsets=%p shapes=%p\n",
+               gid, total, offsets, shapes);
+    }
 
     // determine shape index via binary search
     int l=0, r=numShapes;
@@ -106,14 +115,20 @@ __global__ void overlapEdgesKernel(const long long* xs,const long long* ys,
         if(gid >= offsets[m+1]) l = m + 1; else r = m;
     }
     int shapeIdx = l;
-    // ensure we resolved valid shape index
-    assert(shapeIdx >= 0 && shapeIdx < numShapes);
+    if(!(shapeIdx >= 0 && shapeIdx < numShapes)){
+        printf("[kassert] invalid shapeIdx=%d gid=%zu numShapes=%d\n", shapeIdx, gid, numShapes);
+        assert(shapeIdx >= 0 && shapeIdx < numShapes);
+    }
 
     if(gid < DEBUG_LIMIT)
         printf("[dbg] tid=%zu shapeIdx=%d off=%zu offNext=%zu\n", gid, shapeIdx,
                offsets[shapeIdx], offsets[shapeIdx+1]);
 
-    assert(gid >= offsets[shapeIdx] && gid < offsets[shapeIdx+1]);
+    if(!(gid >= offsets[shapeIdx] && gid < offsets[shapeIdx+1])){
+        printf("[kassert] gid=%zu outside [%zu,%zu) for shapeIdx=%d\n",
+               gid, offsets[shapeIdx], offsets[shapeIdx+1], shapeIdx);
+        assert(gid >= offsets[shapeIdx] && gid < offsets[shapeIdx+1]);
+    }
 
     size_t local = gid - offsets[shapeIdx];
     GPUShape sh = shapes[shapeIdx];
@@ -134,15 +149,27 @@ __global__ void overlapEdgesKernel(const long long* xs,const long long* ys,
                 int ea = (int)(local / pb.size);
                 int eb = (int)(local % pb.size);
 
-                assert(ea >= 0 && ea < pa.size);
-                assert(eb >= 0 && eb < pb.size);
+                if(!(ea >= 0 && ea < pa.size)){
+                    printf("[kassert] ea out of range ea=%d pa.size=%d\n", ea, pa.size);
+                    assert(ea >= 0 && ea < pa.size);
+                }
+                if(!(eb >= 0 && eb < pb.size)){
+                    printf("[kassert] eb out of range eb=%d pb.size=%d\n", eb, pb.size);
+                    assert(eb >= 0 && eb < pb.size);
+                }
 
-                if(gid < DEBUG_LIMIT)
-                    printf("[dbg] tid=%zu -> ea=%d eb=%d\n", gid, ea, eb);
+                if(gid < DEBUG_LIMIT){
+                    printf("[dbg] tid=%zu -> ea=%d eb=%d pa.start=%d pb.start=%d\n",
+                           gid, ea, eb, pa.start, pb.start);
+                }
                 Pt a1{ xs[pa.start + ea], ys[pa.start + ea] };
                 Pt a2{ xs[pa.start + (ea+1)%pa.size], ys[pa.start + (ea+1)%pa.size] };
                 Pt b1{ xs[pb.start + eb], ys[pb.start + eb] };
                 Pt b2{ xs[pb.start + (eb+1)%pb.size], ys[pb.start + (eb+1)%pb.size] };
+                if(gid < DEBUG_LIMIT){
+                    printf("[coords] a1=(%lld,%lld) a2=(%lld,%lld) b1=(%lld,%lld) b2=(%lld,%lld)\n",
+                           a1.x,a1.y,a2.x,a2.y,b1.x,b1.y,b2.x,b2.y);
+                }
                 bool hit = segInt(a1,a2,b1,b2);
                 if(hit) atomicExch(&res[shapeIdx], 1);
                 if(shapeIdx < 10 && gid < 10){
@@ -168,7 +195,13 @@ __global__ void overlapInsideKernel(const long long* xs,const long long* ys,
                                    const GPUPath* paths,GPUShape cand,
                                    const GPUShape* shapes,int numShapes,int* res){
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if(idx >= numShapes) return;
+    if(idx < DEBUG_LIMIT){
+        printf("[kinside-start] idx=%d shapes=%p res=%p\n", idx, shapes, res);
+    }
+    if(idx >= numShapes){
+        printf("[kinside] idx %d >= numShapes %d\n", idx, numShapes);
+        return;
+    }
     if(res[idx]) return; // already found intersection
 
     bool ov = false;
@@ -197,9 +230,13 @@ void overlapKernelLauncher(const long long* d_xs,const long long* d_ys,
                            const GPUPath* d_paths,GPUShape d_cand,
                            const GPUShape* d_shapes,int n,int* d_out){
     // bring shapes and paths back to host to compute prefix sums
-    assert(n > 0);
+    printf("[launcher] d_xs=%p d_ys=%p d_paths=%p d_shapes=%p d_out=%p n=%d\n",
+           d_xs, d_ys, d_paths, d_shapes, d_out, n);
+    printf("[launcher] cand start=%d size=%d\n", d_cand.start, d_cand.size);
+    ASSERT_MSG(n > 0, "n must be >0");
     std::vector<GPUShape> h_shapes(n);
     CUDA_CHECK(cudaMemcpy(h_shapes.data(), d_shapes, n*sizeof(GPUShape), cudaMemcpyDeviceToHost));
+    printf("[launcher] copied shapes to host ptr=%p size=%zu\n", h_shapes.data(), h_shapes.size());
 
     int maxPath = d_cand.start + d_cand.size;
     for(int i=0;i<n;++i){
@@ -208,8 +245,10 @@ void overlapKernelLauncher(const long long* d_xs,const long long* d_ys,
     }
     std::vector<GPUPath> h_paths(maxPath);
     CUDA_CHECK(cudaMemcpy(h_paths.data(), d_paths, maxPath*sizeof(GPUPath), cudaMemcpyDeviceToHost));
+    printf("[launcher] copied %d paths to host ptr=%p\n", maxPath, h_paths.data());
 
     std::vector<size_t> h_off(n+1,0);
+    printf("[prefix] host offsets ptr=%p\n", h_off.data());
     size_t total = 0;
     for(int i=0;i<n;++i){
         size_t cnt = 0;
@@ -223,18 +262,29 @@ void overlapKernelLauncher(const long long* d_xs,const long long* d_ys,
         h_off[i] = total;
         total += cnt;
         if(i < DEBUG_LIMIT)
-            printf("[host] off[%d]=%zu cnt=%zu\n", i, h_off[i], cnt);
-        if(i > 0) assert(h_off[i] >= h_off[i-1]);
+            printf("[prefix] i=%d addr=%p val=%zu cnt=%zu\n", i, &h_off[i], h_off[i], cnt);
+        if(i > 0 && h_off[i] < h_off[i-1]){
+            printf("[prefix-error] monotonic fail at %d prev=%zu curr=%zu\n", i, h_off[i-1], h_off[i]);
+            assert(h_off[i] >= h_off[i-1]);
+        }
     }
     h_off[n] = total;
-    assert(total >= h_off[n-1]);
-    if(n < DEBUG_LIMIT) printf("[host] off[%d]=%zu (total)\n", n, total);
+    ASSERT_MSG(total >= h_off[n-1], "total prefix invalid");
+    if(n < DEBUG_LIMIT)
+        printf("[prefix] i=%d addr=%p val=%zu (total)\n", n, &h_off[n], total);
 
     // device memory for prefix sums
     size_t* d_off = nullptr;
-    CUDA_CHECK(cudaMalloc(&d_off, (n+1)*sizeof(size_t)));
+    cudaError_t allocErr = cudaMalloc(&d_off, (n+1)*sizeof(size_t));
+    if(allocErr != cudaSuccess){
+        printf("[malloc-error] d_off %s\n", cudaGetErrorString(allocErr));
+    }
+    ASSERT_MSG(allocErr == cudaSuccess, "cudaMalloc d_off failed");
+    printf("[malloc] d_off=%p bytes=%zu\n", d_off, (n+1)*sizeof(size_t));
     CUDA_CHECK(cudaMemcpy(d_off, h_off.data(), (n+1)*sizeof(size_t),
                           cudaMemcpyHostToDevice));
+    printf("[memcpy] host->dev d_off=%p from=%p bytes=%zu\n",
+           d_off, h_off.data(), (n+1)*sizeof(size_t));
 
     // verify that the copy succeeded by reading the array back
     std::vector<size_t> h_check(n+1, 0);
@@ -251,21 +301,42 @@ void overlapKernelLauncher(const long long* d_xs,const long long* d_ys,
     }
 
     // zero result array
+    printf("[memset] d_out=%p bytes=%zu\n", d_out, n*sizeof(int));
     CUDA_CHECK(cudaMemset(d_out, 0, n*sizeof(int)));
+    std::vector<int> zeroCheck(n, -1);
+    CUDA_CHECK(cudaMemcpy(zeroCheck.data(), d_out, n*sizeof(int), cudaMemcpyDeviceToHost));
+    for(int i=0;i<n && i<DEBUG_LIMIT; ++i){
+        printf("[memset-check] i=%d val=%d\n", i, zeroCheck[i]);
+        ASSERT_MSG(zeroCheck[i] == 0, "memset failed");
+    }
 
     int t = 256;
     int b = (total + t - 1) / t;
-    assert(t > 0 && b > 0);
+    ASSERT_MSG(t > 0 && b > 0, "invalid launch config");
+    printf("[launch edge] blocks=%d threads=%d total=%zu\n", b, t, total);
+    printf("[launch edge] d_off=%p d_out=%p\n", d_off, d_out);
     overlapEdgesKernel<<<b,t>>>(d_xs,d_ys,d_paths,d_cand,d_shapes,n,d_off,d_out);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 
+    std::vector<int> afterEdge(n);
+    CUDA_CHECK(cudaMemcpy(afterEdge.data(), d_out, n*sizeof(int), cudaMemcpyDeviceToHost));
+    for(int i=0;i<n && i<DEBUG_LIMIT; ++i)
+        printf("[after edge] i=%d val=%d\n", i, afterEdge[i]);
+
     int t2 = 128;
     int b2 = (n + t2 - 1) / t2;
+    printf("[launch inside] blocks=%d threads=%d n=%d\n", b2, t2, n);
     overlapInsideKernel<<<b2,t2>>>(d_xs,d_ys,d_paths,d_cand,d_shapes,n,d_out);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 
+    std::vector<int> finalRes(n);
+    CUDA_CHECK(cudaMemcpy(finalRes.data(), d_out, n*sizeof(int), cudaMemcpyDeviceToHost));
+    for(int i=0;i<n && i<DEBUG_LIMIT; ++i)
+        printf("[final result] i=%d val=%d\n", i, finalRes[i]);
+
+    printf("[free] d_off=%p\n", d_off);
     CUDA_CHECK(cudaFree(d_off));
 }
 

@@ -1,0 +1,516 @@
+{
+	"configurations" : 
+	[
+		{
+			"directories" : 
+			[
+				{
+					"build" : ".",
+					"jsonFile" : "directory-.-Debug-d0094a50bb2071803777.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.14"
+					},
+					"projectIndex" : 0,
+					"source" : ".",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2,
+						3,
+						4,
+						5,
+						6,
+						7,
+						8,
+						9
+					]
+				}
+			],
+			"name" : "Debug",
+			"projects" : 
+			[
+				{
+					"directoryIndexes" : 
+					[
+						0
+					],
+					"name" : "nesting",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2,
+						3,
+						4,
+						5,
+						6,
+						7,
+						8,
+						9
+					]
+				}
+			],
+			"targets" : 
+			[
+				{
+					"directoryIndex" : 0,
+					"id" : "ALL_BUILD::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-ALL_BUILD-Debug-77c2de40645b1cb16cfe.json",
+					"name" : "ALL_BUILD",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "ZERO_CHECK::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-ZERO_CHECK-Debug-35080211da88611092c6.json",
+					"name" : "ZERO_CHECK",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "clipper3::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-clipper3-Debug-de69cc7b97d51bdb353c.json",
+					"name" : "clipper3",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "cuda_kernels::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-cuda_kernels-Debug-2f7c504f70f052a9a5bf.json",
+					"name" : "cuda_kernels",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "geometry::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-geometry-Debug-b2b0f9a00b8f7563609f.json",
+					"name" : "geometry",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "nest::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-nest-Debug-237e335c754af895e028.json",
+					"name" : "nest",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "test_benchmark::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-test_benchmark-Debug-b45f5f10cb5478d80508.json",
+					"name" : "test_benchmark",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "test_minkowski::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-test_minkowski-Debug-099c37a6387834bde1a8.json",
+					"name" : "test_minkowski",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "test_offsets::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-test_offsets-Debug-79292ab58d25420f9c34.json",
+					"name" : "test_offsets",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "test_overlap::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-test_overlap-Debug-86dc45920a8820257de6.json",
+					"name" : "test_overlap",
+					"projectIndex" : 0
+				}
+			]
+		},
+		{
+			"directories" : 
+			[
+				{
+					"build" : ".",
+					"jsonFile" : "directory-.-Release-d0094a50bb2071803777.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.14"
+					},
+					"projectIndex" : 0,
+					"source" : ".",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2,
+						3,
+						4,
+						5,
+						6,
+						7,
+						8,
+						9
+					]
+				}
+			],
+			"name" : "Release",
+			"projects" : 
+			[
+				{
+					"directoryIndexes" : 
+					[
+						0
+					],
+					"name" : "nesting",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2,
+						3,
+						4,
+						5,
+						6,
+						7,
+						8,
+						9
+					]
+				}
+			],
+			"targets" : 
+			[
+				{
+					"directoryIndex" : 0,
+					"id" : "ALL_BUILD::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-ALL_BUILD-Release-77c2de40645b1cb16cfe.json",
+					"name" : "ALL_BUILD",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "ZERO_CHECK::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-ZERO_CHECK-Release-35080211da88611092c6.json",
+					"name" : "ZERO_CHECK",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "clipper3::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-clipper3-Release-59042a1096d1ea38109f.json",
+					"name" : "clipper3",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "cuda_kernels::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-cuda_kernels-Release-41ec002755531a7f4c44.json",
+					"name" : "cuda_kernels",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "geometry::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-geometry-Release-cb7862a000e0479362d0.json",
+					"name" : "geometry",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "nest::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-nest-Release-4764ccd8f11d0596e26a.json",
+					"name" : "nest",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "test_benchmark::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-test_benchmark-Release-7b1e2acaba0572237047.json",
+					"name" : "test_benchmark",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "test_minkowski::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-test_minkowski-Release-d12d7cc1fd4c21ff7879.json",
+					"name" : "test_minkowski",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "test_offsets::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-test_offsets-Release-4e6d03a48c3b818283a1.json",
+					"name" : "test_offsets",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "test_overlap::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-test_overlap-Release-33c305167ac22672c468.json",
+					"name" : "test_overlap",
+					"projectIndex" : 0
+				}
+			]
+		},
+		{
+			"directories" : 
+			[
+				{
+					"build" : ".",
+					"jsonFile" : "directory-.-MinSizeRel-d0094a50bb2071803777.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.14"
+					},
+					"projectIndex" : 0,
+					"source" : ".",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2,
+						3,
+						4,
+						5,
+						6,
+						7,
+						8,
+						9
+					]
+				}
+			],
+			"name" : "MinSizeRel",
+			"projects" : 
+			[
+				{
+					"directoryIndexes" : 
+					[
+						0
+					],
+					"name" : "nesting",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2,
+						3,
+						4,
+						5,
+						6,
+						7,
+						8,
+						9
+					]
+				}
+			],
+			"targets" : 
+			[
+				{
+					"directoryIndex" : 0,
+					"id" : "ALL_BUILD::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-ALL_BUILD-MinSizeRel-77c2de40645b1cb16cfe.json",
+					"name" : "ALL_BUILD",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "ZERO_CHECK::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-ZERO_CHECK-MinSizeRel-35080211da88611092c6.json",
+					"name" : "ZERO_CHECK",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "clipper3::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-clipper3-MinSizeRel-4a7d86516ce0d2a91aab.json",
+					"name" : "clipper3",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "cuda_kernels::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-cuda_kernels-MinSizeRel-eee37f7d31e8fb38b8bf.json",
+					"name" : "cuda_kernels",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "geometry::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-geometry-MinSizeRel-98ca5696e1f9daaaa2f2.json",
+					"name" : "geometry",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "nest::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-nest-MinSizeRel-dacad323536a43567644.json",
+					"name" : "nest",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "test_benchmark::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-test_benchmark-MinSizeRel-1ce592d4f6f8f75427fb.json",
+					"name" : "test_benchmark",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "test_minkowski::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-test_minkowski-MinSizeRel-653d836a19a18a69a4cc.json",
+					"name" : "test_minkowski",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "test_offsets::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-test_offsets-MinSizeRel-af06037dec0fd644b6e9.json",
+					"name" : "test_offsets",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "test_overlap::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-test_overlap-MinSizeRel-4925f735df810666ae65.json",
+					"name" : "test_overlap",
+					"projectIndex" : 0
+				}
+			]
+		},
+		{
+			"directories" : 
+			[
+				{
+					"build" : ".",
+					"jsonFile" : "directory-.-RelWithDebInfo-d0094a50bb2071803777.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.14"
+					},
+					"projectIndex" : 0,
+					"source" : ".",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2,
+						3,
+						4,
+						5,
+						6,
+						7,
+						8,
+						9
+					]
+				}
+			],
+			"name" : "RelWithDebInfo",
+			"projects" : 
+			[
+				{
+					"directoryIndexes" : 
+					[
+						0
+					],
+					"name" : "nesting",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2,
+						3,
+						4,
+						5,
+						6,
+						7,
+						8,
+						9
+					]
+				}
+			],
+			"targets" : 
+			[
+				{
+					"directoryIndex" : 0,
+					"id" : "ALL_BUILD::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-ALL_BUILD-RelWithDebInfo-77c2de40645b1cb16cfe.json",
+					"name" : "ALL_BUILD",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "ZERO_CHECK::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-ZERO_CHECK-RelWithDebInfo-35080211da88611092c6.json",
+					"name" : "ZERO_CHECK",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "clipper3::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-clipper3-RelWithDebInfo-36f2bbaab79f7e677e29.json",
+					"name" : "clipper3",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "cuda_kernels::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-cuda_kernels-RelWithDebInfo-2d40605e8a3189fa6da5.json",
+					"name" : "cuda_kernels",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "geometry::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-geometry-RelWithDebInfo-13cdb5fb241f8bdfc04b.json",
+					"name" : "geometry",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "nest::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-nest-RelWithDebInfo-0b3f3a2eace70b9312da.json",
+					"name" : "nest",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "test_benchmark::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-test_benchmark-RelWithDebInfo-77f87c3dea56fbb7f19e.json",
+					"name" : "test_benchmark",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "test_minkowski::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-test_minkowski-RelWithDebInfo-bb0ea2b65e8823bf7d63.json",
+					"name" : "test_minkowski",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "test_offsets::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-test_offsets-RelWithDebInfo-89548f3f8a4e255e73a6.json",
+					"name" : "test_offsets",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "test_overlap::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-test_overlap-RelWithDebInfo-5f478bd8f9fcca93c2cc.json",
+					"name" : "test_overlap",
+					"projectIndex" : 0
+				}
+			]
+		}
+	],
+	"kind" : "codemodel",
+	"paths" : 
+	{
+		"build" : "C:/Users/User/nesting-cli-test/build",
+		"source" : "C:/Users/User/nesting-cli-test"
+	},
+	"version" : 
+	{
+		"major" : 2,
+		"minor" : 6
+	}
+}

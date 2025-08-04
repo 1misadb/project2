@@ -14,6 +14,9 @@
       <FullPath>C:\Users\User\nesting-cli-test\build\Release\test_minkowski.exe</FullPath>
     </ProjectOutput>
     <ProjectOutput>
+      <FullPath>C:\Users\User\nesting-cli-test\build\Release\test_offsets.exe</FullPath>
+    </ProjectOutput>
+    <ProjectOutput>
       <FullPath>C:\Users\User\nesting-cli-test\build\Release\test_overlap.exe</FullPath>
     </ProjectOutput>
     <ProjectOutput>

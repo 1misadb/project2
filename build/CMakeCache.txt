@@ -94,6 +94,9 @@ CMAKE_EXE_LINKER_FLAGS_RELEASE:STRING=/INCREMENTAL:NO
 //Flags used by the linker during RELWITHDEBINFO builds.
 CMAKE_EXE_LINKER_FLAGS_RELWITHDEBINFO:STRING=/debug /INCREMENTAL
 
+//No help, variable specified on the command line.
+CMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE
+
 //Value Computed by CMake.
 CMAKE_FIND_PACKAGE_REDIRECTS_DIR:STATIC=C:/Users/User/nesting-cli-test/build/CMakeFiles/pkgRedirects
 
@@ -442,8 +445,8 @@ OpenMP_C_FLAGS:STRING=-openmp
 //C compiler libraries for OpenMP parallelization
 OpenMP_C_LIB_NAMES:STRING=
 
-//The directory containing a CMake configuration file for TBB.
-TBB_DIR:PATH=C:/Users/User/vcpkg/installed/x64-windows/share/tbb
+//No help, variable specified on the command line.
+TBB_DIR:UNINITIALIZED=C:/Users/User/vcpkg/installed/x64-windows/share/tbb
 
 //Automatically copy dependencies into the output directory for
 // executables.

@@ -2,10 +2,10 @@
 	"artifacts" : 
 	[
 		{
-			"path" : "Release/test_minkowski.exe"
+			"path" : "MinSizeRel/test_minkowski.exe"
 		},
 		{
-			"path" : "Release/test_minkowski.pdb"
+			"path" : "MinSizeRel/test_minkowski.pdb"
 		}
 	],
 	"backtrace" : 2,
@@ -85,7 +85,7 @@
 			"compileCommandFragments" : 
 			[
 				{
-					"fragment" : "/DWIN32 /D_WINDOWS /W3 /GR /EHsc /MD /O2 /Ob2 /DNDEBUG -std:c++17"
+					"fragment" : "/DWIN32 /D_WINDOWS /W3 /GR /EHsc /MD /O1 /Ob1 /DNDEBUG -std:c++17"
 				}
 			],
 			"defines" : 
@@ -143,11 +143,11 @@
 		},
 		{
 			"backtrace" : 3,
-			"id" : "cuda_kernels::@6890427a1f51a3e7e1df"
+			"id" : "geometry::@6890427a1f51a3e7e1df"
 		},
 		{
 			"backtrace" : 3,
-			"id" : "geometry::@6890427a1f51a3e7e1df"
+			"id" : "cuda_kernels::@6890427a1f51a3e7e1df"
 		},
 		{
 			"id" : "ZERO_CHECK::@6890427a1f51a3e7e1df"
@@ -159,7 +159,7 @@
 		"commandFragments" : 
 		[
 			{
-				"fragment" : "/DWIN32 /D_WINDOWS /W3 /GR /EHsc /MD /O2 /Ob2 /DNDEBUG",
+				"fragment" : "/DWIN32 /D_WINDOWS /W3 /GR /EHsc /MD /O1 /Ob1 /DNDEBUG",
 				"role" : "flags"
 			},
 			{
@@ -180,7 +180,7 @@
 			},
 			{
 				"backtrace" : 3,
-				"fragment" : "Release\\geometry.lib",
+				"fragment" : "MinSizeRel\\geometry.lib",
 				"role" : "libraries"
 			},
 			{
@@ -190,12 +190,12 @@
 			},
 			{
 				"backtrace" : 4,
-				"fragment" : "Release\\clipper3.lib",
+				"fragment" : "MinSizeRel\\clipper3.lib",
 				"role" : "libraries"
 			},
 			{
 				"backtrace" : 5,
-				"fragment" : "Release\\cuda_kernels.lib",
+				"fragment" : "MinSizeRel\\cuda_kernels.lib",
 				"role" : "libraries"
 			},
 			{

@@ -2,10 +2,10 @@
 	"artifacts" : 
 	[
 		{
-			"path" : "RelWithDebInfo/nest.exe"
+			"path" : "Release/nest.exe"
 		},
 		{
-			"path" : "RelWithDebInfo/nest.pdb"
+			"path" : "Release/nest.pdb"
 		}
 	],
 	"backtrace" : 2,
@@ -98,7 +98,7 @@
 			"compileCommandFragments" : 
 			[
 				{
-					"fragment" : "/DWIN32 /D_WINDOWS /W3 /GR /EHsc /MD /Zi /O2 /Ob1 /DNDEBUG -std:c++17"
+					"fragment" : "/DWIN32 /D_WINDOWS /W3 /GR /EHsc /MD /O2 /Ob2 /DNDEBUG -std:c++17"
 				},
 				{
 					"backtrace" : 7,
@@ -172,11 +172,11 @@
 		},
 		{
 			"backtrace" : 3,
-			"id" : "cuda_kernels::@6890427a1f51a3e7e1df"
+			"id" : "geometry::@6890427a1f51a3e7e1df"
 		},
 		{
 			"backtrace" : 3,
-			"id" : "geometry::@6890427a1f51a3e7e1df"
+			"id" : "cuda_kernels::@6890427a1f51a3e7e1df"
 		},
 		{
 			"id" : "ZERO_CHECK::@6890427a1f51a3e7e1df"
@@ -188,11 +188,11 @@
 		"commandFragments" : 
 		[
 			{
-				"fragment" : "/DWIN32 /D_WINDOWS /W3 /GR /EHsc /MD /Zi /O2 /Ob1 /DNDEBUG",
+				"fragment" : "/DWIN32 /D_WINDOWS /W3 /GR /EHsc /MD /O2 /Ob2 /DNDEBUG",
 				"role" : "flags"
 			},
 			{
-				"fragment" : "/machine:x64 /debug /INCREMENTAL /subsystem:console",
+				"fragment" : "/machine:x64 /INCREMENTAL:NO /subsystem:console",
 				"role" : "flags"
 			},
 			{
@@ -209,7 +209,7 @@
 			},
 			{
 				"backtrace" : 3,
-				"fragment" : "RelWithDebInfo\\geometry.lib",
+				"fragment" : "Release\\geometry.lib",
 				"role" : "libraries"
 			},
 			{
@@ -219,12 +219,12 @@
 			},
 			{
 				"backtrace" : 4,
-				"fragment" : "RelWithDebInfo\\clipper3.lib",
+				"fragment" : "Release\\clipper3.lib",
 				"role" : "libraries"
 			},
 			{
 				"backtrace" : 5,
-				"fragment" : "RelWithDebInfo\\cuda_kernels.lib",
+				"fragment" : "Release\\cuda_kernels.lib",
 				"role" : "libraries"
 			},
 			{

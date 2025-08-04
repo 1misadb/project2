@@ -4,7 +4,6 @@
 #include <stdio.h>
 #include <cstdlib>
 #include "geometry.h"
-
 #define DEBUG_LIMIT 20
 
 #define ASSERT_MSG(cond, msg) do { \
@@ -41,7 +40,7 @@
 #define CHECK_PTR(ptr)                                                      \
     do {                                                                    \
         if ((ptr) == nullptr) {                                             \
-            fprintf(stderr,"[FATAL] Нельзя использовать NULL pointer: %s == 0x0\n",#ptr);
+            fprintf(stderr,"[FATAL] Нельзя использовать NULL pointer: %s == 0x0\n",#ptr);\
             exit(1);                                                        \
         }                                                                   \
     } while(0)

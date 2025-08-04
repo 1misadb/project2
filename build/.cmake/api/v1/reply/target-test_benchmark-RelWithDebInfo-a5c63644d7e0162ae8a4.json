@@ -2,10 +2,10 @@
 	"artifacts" : 
 	[
 		{
-			"path" : "Debug/nest.exe"
+			"path" : "RelWithDebInfo/test_benchmark.exe"
 		},
 		{
-			"path" : "Debug/nest.pdb"
+			"path" : "RelWithDebInfo/test_benchmark.pdb"
 		}
 	],
 	"backtrace" : 2,
@@ -16,7 +16,6 @@
 			"_add_executable",
 			"add_executable",
 			"target_link_libraries",
-			"target_compile_options",
 			"add_definitions",
 			"target_include_directories"
 		],
@@ -33,7 +32,7 @@
 			{
 				"command" : 1,
 				"file" : 1,
-				"line" : 37,
+				"line" : 60,
 				"parent" : 0
 			},
 			{
@@ -45,7 +44,7 @@
 			{
 				"command" : 2,
 				"file" : 1,
-				"line" : 39,
+				"line" : 62,
 				"parent" : 0
 			},
 			{
@@ -69,25 +68,13 @@
 			{
 				"command" : 3,
 				"file" : 1,
-				"line" : 50,
-				"parent" : 0
-			},
-			{
-				"command" : 2,
-				"file" : 1,
-				"line" : 44,
+				"line" : 33,
 				"parent" : 0
 			},
 			{
 				"command" : 4,
 				"file" : 1,
-				"line" : 33,
-				"parent" : 0
-			},
-			{
-				"command" : 5,
-				"file" : 1,
-				"line" : 38,
+				"line" : 61,
 				"parent" : 0
 			}
 		]
@@ -98,29 +85,13 @@
 			"compileCommandFragments" : 
 			[
 				{
-					"fragment" : "/DWIN32 /D_WINDOWS /W3 /GR /EHsc /MDd /Zi /Ob0 /Od /RTC1 -std:c++17"
-				},
-				{
-					"backtrace" : 7,
-					"fragment" : "/utf-8"
-				},
-				{
-					"backtrace" : 7,
-					"fragment" : "/openmp"
-				},
-				{
-					"backtrace" : 8,
-					"fragment" : "-openmp"
+					"fragment" : "/DWIN32 /D_WINDOWS /W3 /GR /EHsc /MD /Zi /O2 /Ob1 /DNDEBUG -std:c++17"
 				}
 			],
 			"defines" : 
 			[
 				{
-					"backtrace" : 3,
-					"define" : "TBB_USE_DEBUG"
-				},
-				{
-					"backtrace" : 9,
+					"backtrace" : 7,
 					"define" : "USE_CUDA"
 				},
 				{
@@ -131,16 +102,12 @@
 			"includes" : 
 			[
 				{
-					"backtrace" : 10,
+					"backtrace" : 8,
 					"path" : "C:/Users/User/nesting-cli-test/."
 				},
 				{
-					"backtrace" : 10,
+					"backtrace" : 8,
 					"path" : "C:/Users/User/nesting-cli-test/clipper3"
-				},
-				{
-					"backtrace" : 10,
-					"path" : "C:/Users/User/nesting-cli-test/spdlog/include"
 				},
 				{
 					"backtrace" : 3,
@@ -176,23 +143,23 @@
 		},
 		{
 			"backtrace" : 3,
-			"id" : "cuda_kernels::@6890427a1f51a3e7e1df"
+			"id" : "geometry::@6890427a1f51a3e7e1df"
 		},
 		{
 			"backtrace" : 3,
-			"id" : "geometry::@6890427a1f51a3e7e1df"
+			"id" : "cuda_kernels::@6890427a1f51a3e7e1df"
 		},
 		{
 			"id" : "ZERO_CHECK::@6890427a1f51a3e7e1df"
 		}
 	],
-	"id" : "nest::@6890427a1f51a3e7e1df",
+	"id" : "test_benchmark::@6890427a1f51a3e7e1df",
 	"link" : 
 	{
 		"commandFragments" : 
 		[
 			{
-				"fragment" : "/DWIN32 /D_WINDOWS /W3 /GR /EHsc /MDd /Zi /Ob0 /Od /RTC1",
+				"fragment" : "/DWIN32 /D_WINDOWS /W3 /GR /EHsc /MD /Zi /O2 /Ob1 /DNDEBUG",
 				"role" : "flags"
 			},
 			{
@@ -213,22 +180,22 @@
 			},
 			{
 				"backtrace" : 3,
-				"fragment" : "Debug\\geometry.lib",
+				"fragment" : "RelWithDebInfo\\geometry.lib",
 				"role" : "libraries"
 			},
 			{
 				"backtrace" : 3,
-				"fragment" : "C:\\Users\\User\\vcpkg\\installed\\x64-windows\\debug\\lib\\tbb12_debug.lib",
+				"fragment" : "C:\\Users\\User\\vcpkg\\installed\\x64-windows\\lib\\tbb12.lib",
 				"role" : "libraries"
 			},
 			{
 				"backtrace" : 4,
-				"fragment" : "Debug\\clipper3.lib",
+				"fragment" : "RelWithDebInfo\\clipper3.lib",
 				"role" : "libraries"
 			},
 			{
 				"backtrace" : 5,
-				"fragment" : "Debug\\cuda_kernels.lib",
+				"fragment" : "RelWithDebInfo\\cuda_kernels.lib",
 				"role" : "libraries"
 			},
 			{
@@ -255,8 +222,8 @@
 		],
 		"language" : "CXX"
 	},
-	"name" : "nest",
-	"nameOnDisk" : "nest.exe",
+	"name" : "test_benchmark",
+	"nameOnDisk" : "test_benchmark.exe",
 	"paths" : 
 	{
 		"build" : ".",
@@ -277,7 +244,7 @@
 		{
 			"backtrace" : 2,
 			"compileGroupIndex" : 0,
-			"path" : "nesting_algorithm.cpp",
+			"path" : "tests/test_benchmark.cpp",
 			"sourceGroupIndex" : 0
 		}
 	],

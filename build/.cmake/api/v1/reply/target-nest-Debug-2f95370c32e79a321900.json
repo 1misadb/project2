@@ -2,10 +2,10 @@
 	"artifacts" : 
 	[
 		{
-			"path" : "Release/nest.exe"
+			"path" : "Debug/nest.exe"
 		},
 		{
-			"path" : "Release/nest.pdb"
+			"path" : "Debug/nest.pdb"
 		}
 	],
 	"backtrace" : 2,
@@ -98,7 +98,7 @@
 			"compileCommandFragments" : 
 			[
 				{
-					"fragment" : "/DWIN32 /D_WINDOWS /W3 /GR /EHsc /MD /O2 /Ob2 /DNDEBUG -std:c++17"
+					"fragment" : "/DWIN32 /D_WINDOWS /W3 /GR /EHsc /MDd /Zi /Ob0 /Od /RTC1 -std:c++17"
 				},
 				{
 					"backtrace" : 7,
@@ -115,6 +115,10 @@
 			],
 			"defines" : 
 			[
+				{
+					"backtrace" : 3,
+					"define" : "TBB_USE_DEBUG"
+				},
 				{
 					"backtrace" : 9,
 					"define" : "USE_CUDA"
@@ -172,11 +176,11 @@
 		},
 		{
 			"backtrace" : 3,
-			"id" : "cuda_kernels::@6890427a1f51a3e7e1df"
+			"id" : "geometry::@6890427a1f51a3e7e1df"
 		},
 		{
 			"backtrace" : 3,
-			"id" : "geometry::@6890427a1f51a3e7e1df"
+			"id" : "cuda_kernels::@6890427a1f51a3e7e1df"
 		},
 		{
 			"id" : "ZERO_CHECK::@6890427a1f51a3e7e1df"
@@ -188,11 +192,11 @@
 		"commandFragments" : 
 		[
 			{
-				"fragment" : "/DWIN32 /D_WINDOWS /W3 /GR /EHsc /MD /O2 /Ob2 /DNDEBUG",
+				"fragment" : "/DWIN32 /D_WINDOWS /W3 /GR /EHsc /MDd /Zi /Ob0 /Od /RTC1",
 				"role" : "flags"
 			},
 			{
-				"fragment" : "/machine:x64 /INCREMENTAL:NO /subsystem:console",
+				"fragment" : "/machine:x64 /debug /INCREMENTAL /subsystem:console",
 				"role" : "flags"
 			},
 			{
@@ -209,22 +213,22 @@
 			},
 			{
 				"backtrace" : 3,
-				"fragment" : "Release\\geometry.lib",
+				"fragment" : "Debug\\geometry.lib",
 				"role" : "libraries"
 			},
 			{
 				"backtrace" : 3,
-				"fragment" : "C:\\Users\\User\\vcpkg\\installed\\x64-windows\\lib\\tbb12.lib",
+				"fragment" : "C:\\Users\\User\\vcpkg\\installed\\x64-windows\\debug\\lib\\tbb12_debug.lib",
 				"role" : "libraries"
 			},
 			{
 				"backtrace" : 4,
-				"fragment" : "Release\\clipper3.lib",
+				"fragment" : "Debug\\clipper3.lib",
 				"role" : "libraries"
 			},
 			{
 				"backtrace" : 5,
-				"fragment" : "Release\\cuda_kernels.lib",
+				"fragment" : "Debug\\cuda_kernels.lib",
 				"role" : "libraries"
 			},
 			{

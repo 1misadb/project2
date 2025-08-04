@@ -1,6 +1,45 @@
 #include "geometry.h"
 #ifdef USE_CUDA
 #include <cuda_runtime.h>
+#include <cstdio>
+#include <cstdlib>
+
+#define CUDA_CHECK(x)                                                        \
+    do {                                                                    \
+        cudaError_t err = (x);                                              \
+        if (err != cudaSuccess) {                                           \
+            fprintf(stderr,"[ERR] %s failed: %s\n", #x,                    \
+                    cudaGetErrorString(err));                               \
+            exit(1);                                                        \
+        }                                                                   \
+    } while(0)
+
+#define CHECK_ALLOC(ptr)                                                    \
+    do {                                                                    \
+        if ((ptr) == nullptr) {                                             \
+            fprintf(stderr,"[FATAL] cudaMalloc вернул NULL для %s!\n",    \
+                    #ptr);                                                 \
+            exit(1);                                                        \
+        }                                                                   \
+    } while(0)
+
+#define CHECK_PTR(ptr)                                                      \
+    do {                                                                    \
+        if ((ptr) == nullptr) {                                             \
+            fprintf(stderr,"[FATAL] Нельзя использовать NULL pointer: %s == 0x0\n",#ptr);
+            exit(1);                                                        \
+        }                                                                   \
+    } while(0)
+
+#define FATAL_KERNEL_NULL(ptr)                                              \
+    do {                                                                    \
+        if ((ptr) == nullptr) {                                             \
+            fprintf(stderr,                                               \
+                    "[FATAL] Нельзя вызывать ядро с NULL pointer: %s == 0x0\n",\
+                    #ptr);                                                 \
+            exit(1);                                                        \
+        }                                                                   \
+    } while(0)
 #endif
 #include <limits>
 #include <algorithm>
@@ -126,7 +165,12 @@ extern "C" void overlapKernelLauncher(const long long* d_xs, const long long* d_
 
 bool cuda_available(){
 #ifdef USE_CUDA
-    int cnt=0; return cudaGetDeviceCount(&cnt)==cudaSuccess && cnt>0;
+    int cnt=0; cudaError_t rc = cudaGetDeviceCount(&cnt);
+    if(rc != cudaSuccess){
+        fprintf(stderr,"[ERR] cudaGetDeviceCount failed: %s\n", cudaGetErrorString(rc));
+        return false;
+    }
+    return cnt>0;
 #else
     return false;
 #endif
@@ -162,33 +206,46 @@ std::vector<bool> overlapBatchGPU(const Paths64& cand,
         shapes.push_back(s);
     }
     long long* d_xs; long long* d_ys; GPUPath* d_paths; GPUShape* d_shapes; int* d_out;
-    size_t pts_sz=xs.size()*sizeof(long long); cudaMalloc(&d_xs,pts_sz); cudaMalloc(&d_ys,pts_sz);
+    size_t pts_sz=xs.size()*sizeof(long long);
+    CUDA_CHECK(cudaMalloc(&d_xs,pts_sz)); CHECK_ALLOC(d_xs);
+    CUDA_CHECK(cudaMalloc(&d_ys,pts_sz)); CHECK_ALLOC(d_ys);
     printf("[gpu alloc] d_xs=%p d_ys=%p pts_sz=%zu\n", d_xs, d_ys, pts_sz);
-    cudaMemcpy(d_xs,xs.data(),pts_sz,cudaMemcpyHostToDevice);
-    cudaMemcpy(d_ys,ys.data(),pts_sz,cudaMemcpyHostToDevice);
-    cudaMalloc(&d_paths,paths.size()*sizeof(GPUPath));
-    cudaMemcpy(d_paths,paths.data(),paths.size()*sizeof(GPUPath),cudaMemcpyHostToDevice);
+    CHECK_PTR(d_xs);
+    CUDA_CHECK(cudaMemcpy(d_xs,xs.data(),pts_sz,cudaMemcpyHostToDevice));
+    CHECK_PTR(d_ys);
+    CUDA_CHECK(cudaMemcpy(d_ys,ys.data(),pts_sz,cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMalloc(&d_paths,paths.size()*sizeof(GPUPath))); CHECK_ALLOC(d_paths);
+    CHECK_PTR(d_paths);
+    CUDA_CHECK(cudaMemcpy(d_paths,paths.data(),paths.size()*sizeof(GPUPath),cudaMemcpyHostToDevice));
     printf("[gpu alloc] d_paths=%p count=%zu\n", d_paths, paths.size());
-    cudaMalloc(&d_shapes,shapes.size()*sizeof(GPUShape));
-    cudaMemcpy(d_shapes,shapes.data(),shapes.size()*sizeof(GPUShape),cudaMemcpyHostToDevice);
+    CUDA_CHECK(cudaMalloc(&d_shapes,shapes.size()*sizeof(GPUShape))); CHECK_ALLOC(d_shapes);
+    CHECK_PTR(d_shapes);
+    CUDA_CHECK(cudaMemcpy(d_shapes,shapes.data(),shapes.size()*sizeof(GPUShape),cudaMemcpyHostToDevice));
     printf("[gpu alloc] d_shapes=%p count=%zu\n", d_shapes, shapes.size());
-    cudaMalloc(&d_out,shapes.size()*sizeof(int));
+    CUDA_CHECK(cudaMalloc(&d_out,shapes.size()*sizeof(int))); CHECK_ALLOC(d_out);
     printf("[gpu alloc] d_out=%p count=%zu\n", d_out, shapes.size());
     GPUShape d_cand=candShape; // copy by value
 
     // <<<--- вот тут вызывем только launcher-обёртку!
     printf("[call launcher] shapes=%zu cand.size=%d\n", shapes.size(), cand.size());
+    FATAL_KERNEL_NULL(d_xs); FATAL_KERNEL_NULL(d_ys); FATAL_KERNEL_NULL(d_paths);
+    FATAL_KERNEL_NULL(d_shapes); FATAL_KERNEL_NULL(d_out);
     overlapKernelLauncher(d_xs, d_ys, d_paths, d_cand, d_shapes, (int)shapes.size(), d_out);
 
     std::vector<int> res_raw(others.size());
-    cudaMemcpy(res_raw.data(), d_out, others.size()*sizeof(int), cudaMemcpyDeviceToHost);
+    CHECK_PTR(d_out);
+    CUDA_CHECK(cudaMemcpy(res_raw.data(), d_out, others.size()*sizeof(int), cudaMemcpyDeviceToHost));
     for(size_t i=0;i<others.size() && i<10;++i)
         printf("[host result] i=%zu val=%d\n", i, res_raw[i]);
     std::vector<bool> res(others.size());
     for (size_t i = 0; i < others.size(); ++i)
         res[i] = (res_raw[i] != 0);
 
-    cudaFree(d_xs); cudaFree(d_ys); cudaFree(d_paths); cudaFree(d_shapes); cudaFree(d_out);
+    if(d_xs){ CUDA_CHECK(cudaFree(d_xs)); d_xs=nullptr; }
+    if(d_ys){ CUDA_CHECK(cudaFree(d_ys)); d_ys=nullptr; }
+    if(d_paths){ CUDA_CHECK(cudaFree(d_paths)); d_paths=nullptr; }
+    if(d_shapes){ CUDA_CHECK(cudaFree(d_shapes)); d_shapes=nullptr; }
+    if(d_out){ CUDA_CHECK(cudaFree(d_out)); d_out=nullptr; }
     return res;
 #else
     std::vector<bool> r(others.size());
@@ -273,26 +330,34 @@ std::vector<Paths64> minkowskiBatchGPU(const std::vector<Path64>& A,
         out_sz += (size_t)ainfo[i].size * (size_t)binfo[i].size;
     }
     long long *d_ax,*d_ay,*d_bx,*d_by,*d_outx,*d_outy; GPUPair* d_pairs;
-    cudaMalloc(&d_ax, ax.size()*sizeof(long long));
-    cudaMalloc(&d_ay, ay.size()*sizeof(long long));
-    cudaMalloc(&d_bx, bx.size()*sizeof(long long));
-    cudaMalloc(&d_by, by.size()*sizeof(long long));
-    cudaMemcpy(d_ax, ax.data(), ax.size()*sizeof(long long), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_ay, ay.data(), ay.size()*sizeof(long long), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_bx, bx.data(), bx.size()*sizeof(long long), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_by, by.data(), by.size()*sizeof(long long), cudaMemcpyHostToDevice);
-    cudaMalloc(&d_pairs, pairs.size()*sizeof(GPUPair));
-    cudaMemcpy(d_pairs, pairs.data(), pairs.size()*sizeof(GPUPair), cudaMemcpyHostToDevice);
-    cudaMalloc(&d_outx, out_sz*sizeof(long long));
-    cudaMalloc(&d_outy, out_sz*sizeof(long long));
+    CUDA_CHECK(cudaMalloc(&d_ax, ax.size()*sizeof(long long))); CHECK_ALLOC(d_ax);
+    CUDA_CHECK(cudaMalloc(&d_ay, ay.size()*sizeof(long long))); CHECK_ALLOC(d_ay);
+    CUDA_CHECK(cudaMalloc(&d_bx, bx.size()*sizeof(long long))); CHECK_ALLOC(d_bx);
+    CUDA_CHECK(cudaMalloc(&d_by, by.size()*sizeof(long long))); CHECK_ALLOC(d_by);
+    CHECK_PTR(d_ax); CUDA_CHECK(cudaMemcpy(d_ax, ax.data(), ax.size()*sizeof(long long), cudaMemcpyHostToDevice));
+    CHECK_PTR(d_ay); CUDA_CHECK(cudaMemcpy(d_ay, ay.data(), ay.size()*sizeof(long long), cudaMemcpyHostToDevice));
+    CHECK_PTR(d_bx); CUDA_CHECK(cudaMemcpy(d_bx, bx.data(), bx.size()*sizeof(long long), cudaMemcpyHostToDevice));
+    CHECK_PTR(d_by); CUDA_CHECK(cudaMemcpy(d_by, by.data(), by.size()*sizeof(long long), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMalloc(&d_pairs, pairs.size()*sizeof(GPUPair))); CHECK_ALLOC(d_pairs);
+    CHECK_PTR(d_pairs); CUDA_CHECK(cudaMemcpy(d_pairs, pairs.data(), pairs.size()*sizeof(GPUPair), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMalloc(&d_outx, out_sz*sizeof(long long))); CHECK_ALLOC(d_outx);
+    CUDA_CHECK(cudaMalloc(&d_outy, out_sz*sizeof(long long))); CHECK_ALLOC(d_outy);
 
+    FATAL_KERNEL_NULL(d_ax); FATAL_KERNEL_NULL(d_ay); FATAL_KERNEL_NULL(d_bx);
+    FATAL_KERNEL_NULL(d_by); FATAL_KERNEL_NULL(d_pairs); FATAL_KERNEL_NULL(d_outx);
+    FATAL_KERNEL_NULL(d_outy);
     minkowskiKernelLauncher(d_ax,d_ay,d_bx,d_by,d_pairs,(int)pairCount,d_outx,d_outy);
 
     std::vector<long long> outx(out_sz), outy(out_sz);
-    cudaMemcpy(outx.data(), d_outx, out_sz*sizeof(long long), cudaMemcpyDeviceToHost);
-    cudaMemcpy(outy.data(), d_outy, out_sz*sizeof(long long), cudaMemcpyDeviceToHost);
-    cudaFree(d_ax); cudaFree(d_ay); cudaFree(d_bx); cudaFree(d_by);
-    cudaFree(d_pairs); cudaFree(d_outx); cudaFree(d_outy);
+    CHECK_PTR(d_outx); CUDA_CHECK(cudaMemcpy(outx.data(), d_outx, out_sz*sizeof(long long), cudaMemcpyDeviceToHost));
+    CHECK_PTR(d_outy); CUDA_CHECK(cudaMemcpy(outy.data(), d_outy, out_sz*sizeof(long long), cudaMemcpyDeviceToHost));
+    if(d_ax){ CUDA_CHECK(cudaFree(d_ax)); d_ax=nullptr; }
+    if(d_ay){ CUDA_CHECK(cudaFree(d_ay)); d_ay=nullptr; }
+    if(d_bx){ CUDA_CHECK(cudaFree(d_bx)); d_bx=nullptr; }
+    if(d_by){ CUDA_CHECK(cudaFree(d_by)); d_by=nullptr; }
+    if(d_pairs){ CUDA_CHECK(cudaFree(d_pairs)); d_pairs=nullptr; }
+    if(d_outx){ CUDA_CHECK(cudaFree(d_outx)); d_outx=nullptr; }
+    if(d_outy){ CUDA_CHECK(cudaFree(d_outy)); d_outy=nullptr; }
 
     std::vector<Paths64> res(pairCount);
     for(size_t i=0;i<pairCount;++i){

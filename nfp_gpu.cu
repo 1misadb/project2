@@ -1,5 +1,29 @@
 #include <cuda_runtime.h>
 #include "geometry.h"
+#include <cstdio>
+#include <cstdlib>
+
+#ifndef CUDA_CHECK
+#define CUDA_CHECK(x)                                                        \
+    do {                                                                    \
+        cudaError_t err = (x);                                              \
+        if (err != cudaSuccess) {                                           \
+            fprintf(stderr,"[ERR] %s failed: %s\n", #x,                    \
+                    cudaGetErrorString(err));                               \
+            exit(1);                                                        \
+        }                                                                   \
+    } while(0)
+#endif
+
+#define FATAL_KERNEL_NULL(ptr)                                              \
+    do {                                                                    \
+        if ((ptr) == nullptr) {                                             \
+            fprintf(stderr,                                               \
+                    "[FATAL] Нельзя вызывать ядро с NULL pointer: %s == 0x0\n",\
+                    #ptr);                                                 \
+            exit(1);                                                        \
+        }                                                                   \
+    } while(0)
 
 struct GPUPath { int start; int size; };
 struct GPUPair { GPUPath a; GPUPath b; int start; };
@@ -31,9 +55,13 @@ void minkowskiKernelLauncher(const long long* ax,const long long* ay,
                              const long long* bx,const long long* by,
                              const GPUPair* pairs,int pairCount,
                              long long* outx,long long* outy){
+    FATAL_KERNEL_NULL(ax); FATAL_KERNEL_NULL(ay); FATAL_KERNEL_NULL(bx);
+    FATAL_KERNEL_NULL(by); FATAL_KERNEL_NULL(pairs); FATAL_KERNEL_NULL(outx);
+    FATAL_KERNEL_NULL(outy);
     int threads = 128;
     minkowskiPairsKernel<<<pairCount, threads>>>(ax,ay,bx,by,pairs,pairCount,outx,outy);
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
 }
 #ifdef __cplusplus
 }

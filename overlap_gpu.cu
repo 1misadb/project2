@@ -2,6 +2,7 @@
 #include <cassert>
 #include <stdexcept>
 #include <stdio.h>
+#include <cstdlib>
 #include "geometry.h"
 
 #define DEBUG_LIMIT 20
@@ -20,10 +21,40 @@
 #define CUDA_CHECK(x)                                                        \
     do {                                                                    \
         cudaError_t err = (x);                                              \
-        if (err != cudaSuccess)                                             \
-            throw std::runtime_error(cudaGetErrorString(err));              \
+        if (err != cudaSuccess) {                                           \
+            fprintf(stderr,"[ERR] %s failed: %s\n", #x,                    \
+                    cudaGetErrorString(err));                               \
+            exit(1);                                                        \
+        }                                                                   \
     } while(0)
 #endif
+
+#define CHECK_ALLOC(ptr)                                                    \
+    do {                                                                    \
+        if ((ptr) == nullptr) {                                             \
+            fprintf(stderr,"[FATAL] cudaMalloc вернул NULL для %s!\n",    \
+                    #ptr);                                                 \
+            exit(1);                                                        \
+        }                                                                   \
+    } while(0)
+
+#define CHECK_PTR(ptr)                                                      \
+    do {                                                                    \
+        if ((ptr) == nullptr) {                                             \
+            fprintf(stderr,"[FATAL] Нельзя использовать NULL pointer: %s == 0x0\n",#ptr);
+            exit(1);                                                        \
+        }                                                                   \
+    } while(0)
+
+#define FATAL_KERNEL_NULL(ptr)                                              \
+    do {                                                                    \
+        if ((ptr) == nullptr) {                                             \
+            fprintf(stderr,                                               \
+                    "[FATAL] Нельзя вызывать ядро с NULL pointer: %s == 0x0\n",\
+                    #ptr);                                                 \
+            exit(1);                                                        \
+        }                                                                   \
+    } while(0)
 
 // ---------------------------------------------------------------------------------
 // Simple geometry structures used on GPU
@@ -233,8 +264,10 @@ void overlapKernelLauncher(const long long* d_xs,const long long* d_ys,
     printf("[launcher] d_xs=%p d_ys=%p d_paths=%p d_shapes=%p d_out=%p n=%d\n",
            d_xs, d_ys, d_paths, d_shapes, d_out, n);
     printf("[launcher] cand start=%d size=%d\n", d_cand.start, d_cand.size);
+    CHECK_PTR(d_xs); CHECK_PTR(d_ys); CHECK_PTR(d_paths); CHECK_PTR(d_shapes); CHECK_PTR(d_out);
     ASSERT_MSG(n > 0, "n must be >0");
     std::vector<GPUShape> h_shapes(n);
+    CHECK_PTR(d_shapes);
     CUDA_CHECK(cudaMemcpy(h_shapes.data(), d_shapes, n*sizeof(GPUShape), cudaMemcpyDeviceToHost));
     printf("[launcher] copied shapes to host ptr=%p size=%zu\n", h_shapes.data(), h_shapes.size());
 
@@ -244,6 +277,7 @@ void overlapKernelLauncher(const long long* d_xs,const long long* d_ys,
         if(end > maxPath) maxPath = end;
     }
     std::vector<GPUPath> h_paths(maxPath);
+    CHECK_PTR(d_paths);
     CUDA_CHECK(cudaMemcpy(h_paths.data(), d_paths, maxPath*sizeof(GPUPath), cudaMemcpyDeviceToHost));
     printf("[launcher] copied %d paths to host ptr=%p\n", maxPath, h_paths.data());
 
@@ -277,7 +311,9 @@ void overlapKernelLauncher(const long long* d_xs,const long long* d_ys,
     // device memory for prefix sums
     size_t* d_off = nullptr;
     CUDA_CHECK(cudaMalloc(&d_off, (n+1)*sizeof(size_t))); // <FIX offsets>
+    CHECK_ALLOC(d_off);
     printf("[malloc] d_off=%p bytes=%zu\n", d_off, (n+1)*sizeof(size_t));
+    CHECK_PTR(d_off);
     CUDA_CHECK(cudaMemcpy(d_off, h_off.data(), (n+1)*sizeof(size_t),
                           cudaMemcpyHostToDevice));
     printf("[memcpy] host->dev d_off=%p from=%p bytes=%zu\n",
@@ -285,6 +321,7 @@ void overlapKernelLauncher(const long long* d_xs,const long long* d_ys,
 
     // verify that the copy succeeded by reading the array back
     std::vector<size_t> h_check(n+1, 0);
+    CHECK_PTR(d_off);
     CUDA_CHECK(cudaMemcpy(h_check.data(), d_off, (n+1)*sizeof(size_t),
                           cudaMemcpyDeviceToHost));
     for(int i=0;i<=n;++i){
@@ -299,8 +336,10 @@ void overlapKernelLauncher(const long long* d_xs,const long long* d_ys,
 
     // zero result array
     printf("[memset] d_out=%p bytes=%zu\n", d_out, n*sizeof(int));
+    CHECK_PTR(d_out);
     CUDA_CHECK(cudaMemset(d_out, 0, n*sizeof(int)));
     std::vector<int> zeroCheck(n, -1);
+    CHECK_PTR(d_out);
     CUDA_CHECK(cudaMemcpy(zeroCheck.data(), d_out, n*sizeof(int), cudaMemcpyDeviceToHost));
     for(int i=0;i<n && i<DEBUG_LIMIT; ++i){
         printf("[memset-check] i=%d val=%d\n", i, zeroCheck[i]);
@@ -312,11 +351,18 @@ void overlapKernelLauncher(const long long* d_xs,const long long* d_ys,
     ASSERT_MSG(t > 0 && b > 0, "invalid launch config");
     printf("[launch edge] blocks=%d threads=%d total=%zu\n", b, t, total);
     printf("[launch edge] d_off=%p d_out=%p\n", d_off, d_out);
+    FATAL_KERNEL_NULL(d_xs);
+    FATAL_KERNEL_NULL(d_ys);
+    FATAL_KERNEL_NULL(d_paths);
+    FATAL_KERNEL_NULL(d_shapes);
+    FATAL_KERNEL_NULL(d_off);
+    FATAL_KERNEL_NULL(d_out);
     overlapEdgesKernel<<<b,t>>>(d_xs,d_ys,d_paths,d_cand,d_shapes,n,d_off,d_out);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 
     std::vector<int> afterEdge(n);
+    CHECK_PTR(d_out);
     CUDA_CHECK(cudaMemcpy(afterEdge.data(), d_out, n*sizeof(int), cudaMemcpyDeviceToHost));
     for(int i=0;i<n && i<DEBUG_LIMIT; ++i)
         printf("[after edge] i=%d val=%d\n", i, afterEdge[i]);
@@ -324,17 +370,26 @@ void overlapKernelLauncher(const long long* d_xs,const long long* d_ys,
     int t2 = 128;
     int b2 = (n + t2 - 1) / t2;
     printf("[launch inside] blocks=%d threads=%d n=%d\n", b2, t2, n);
+    FATAL_KERNEL_NULL(d_xs);
+    FATAL_KERNEL_NULL(d_ys);
+    FATAL_KERNEL_NULL(d_paths);
+    FATAL_KERNEL_NULL(d_shapes);
+    FATAL_KERNEL_NULL(d_out);
     overlapInsideKernel<<<b2,t2>>>(d_xs,d_ys,d_paths,d_cand,d_shapes,n,d_out);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 
     std::vector<int> finalRes(n);
+    CHECK_PTR(d_out);
     CUDA_CHECK(cudaMemcpy(finalRes.data(), d_out, n*sizeof(int), cudaMemcpyDeviceToHost));
     for(int i=0;i<n && i<DEBUG_LIMIT; ++i)
         printf("[final result] i=%d val=%d\n", i, finalRes[i]);
 
     printf("[free] d_off=%p\n", d_off);
-    CUDA_CHECK(cudaFree(d_off));
+    if(d_off){
+        CUDA_CHECK(cudaFree(d_off));
+        d_off = nullptr;
+    }
 }
 
 #ifdef __cplusplus

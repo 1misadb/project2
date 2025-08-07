@@ -36,7 +36,7 @@ target_include_directories(clipper3 PUBLIC clipper3)
 
 # --- GEOMETRY LIBRARY ---
 add_library(geometry geometry.cpp)
-target_include_directories(geometry PUBLIC . clipper3)
+target_include_directories(geometry PUBLIC . clipper3 spdlog/include)
 target_link_libraries(geometry PUBLIC clipper3)
 
 # --- CUDA (OPTIONAL) ---

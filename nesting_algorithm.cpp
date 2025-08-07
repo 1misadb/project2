@@ -37,8 +37,10 @@
 #include <thread>
 #include <set>
 #ifdef _OPENMP
-#include <cuda_runtime.h>
 #include <omp.h>
+#endif
+#ifdef USE_CUDA
+#include <cuda_runtime.h>
 #endif
 #define _USE_MATH_DEFINES
 #include <math.h>
@@ -862,10 +864,10 @@ static std::vector<RawPart> entitiesToParts(const std::vector<RawEntity>& ents)
 // Load parts from JSON file produced by extract_polylines.py
 static std::vector<RawPart> loadPartsFromJson(const std::string& filename)
 {
-    std::cerr << "[JSON] parsing " << filename << "\n";
+    spdlog::info("[JSON] parsing {}", filename);
     std::ifstream fin(filename);
     if(!fin){
-        std::cerr << "[WARN] cannot open " << filename << "\n";
+        spdlog::warn("[JSON] cannot open {}", filename);
         return {};
     }
 
@@ -873,12 +875,12 @@ static std::vector<RawPart> loadPartsFromJson(const std::string& filename)
     std::string data = buf.str();
     auto pos = data.find_first_not_of(" \t\r\n");
     if(pos == std::string::npos){
-        std::cerr << "[WARN] empty file " << filename << "\n";
+        spdlog::warn("[JSON] empty file {}", filename);
         return {};
     }
     char first = data[pos];
     if(first != '[' && first != '{'){
-        std::cerr << "[WARN] skipping non JSON " << filename << "\n";
+        spdlog::warn("[JSON] skipping non JSON {}", filename);
         return {};
     }
 
@@ -886,28 +888,41 @@ static std::vector<RawPart> loadPartsFromJson(const std::string& filename)
     try{
         j = nlohmann::json::parse(data);
     }catch(const std::exception& e){
-        std::cerr << "[ERR] parse " << filename << ": " << e.what() << "\n";
+        spdlog::error("[JSON] parse {}: {}", filename, e.what());
         return {};
     }
     if(!j.is_array()){
-        std::cerr << "[ERR] invalid JSON format in " << filename << "\n";
+        spdlog::error("[JSON] invalid JSON format in {}", filename);
         return {};
     }
 
-    auto parse_one = [](const nlohmann::json& arr)->RawPart {
+    auto parse_one = [&](const nlohmann::json& arr)->RawPart {
         RawPart p;
         bool first = true;
+        if(!arr.is_array()) return p;
         for(const auto& path : arr){
-            if(!path.is_array())
+            if(!path.is_array()){
+                spdlog::warn("[JSON] path is not array in {}", filename);
                 continue;
+            }
             Path64 ring;
             for(const auto& pt : path){
-                if(pt.size() < 2) continue;
+                if(!pt.is_array() || pt.size() < 2 || !pt[0].is_number() || !pt[1].is_number()){
+                    spdlog::warn("[JSON] invalid point in {}", filename);
+                    continue;
+                }
                 double x = pt[0].get<double>();
                 double y = pt[1].get<double>();
+                if(!std::isfinite(x) || !std::isfinite(y)){
+                    spdlog::warn("[JSON] non finite coordinate in {}", filename);
+                    continue;
+                }
                 ring.emplace_back(I64mm(x), I64mm(y));
             }
-            if(ring.size() < 2) continue;
+            if(ring.size() < 3) {
+                spdlog::warn("[JSON] skipping degenerate ring in {}", filename);
+                continue;
+            }
             if(ring.front() != ring.back())
                 ring.push_back(ring.front());
             if(first){
@@ -957,6 +972,7 @@ static std::vector<RawPart> loadPartsFromJson(const std::string& filename)
             parts.push_back(std::move(part));
         }
     }
+    spdlog::info("[JSON] loaded {} part(s) from {}", parts.size(), filename);
     return parts;
 }
 
@@ -1903,12 +1919,11 @@ int main(int argc, char* argv[])
         spdlog::set_level(gVerbose ? spdlog::level::info : spdlog::level::warn);
         // ─── Debug‑вывод параметров ───────────────────────────────────────────
         if(gVerbose)
-            std::cerr << "[PARAMS] Sheet: " << cli.W << "x" << cli.H << " mm\n"
-                      << "         Grid: " << cli.grid << " mm\n"
-                      << "         Rot step: " << cli.rot << "°\n"
-                      << "         Iterations: " << cli.iter << "\n";
+            spdlog::info("Sheet: {}x{} mm, grid={} mm, rot step={}°, iter={}",
+                          cli.W, cli.H, cli.grid, cli.rot, cli.iter);
 
         // ─── Загрузка деталей из JSON ────────────────────────────────────────
+        spdlog::info("Loading parts from JSON files...");
         std::vector<RawPart> parts;
         for (size_t idx = 0; idx < cli.files.size(); ++idx) {
             auto batch = loadPartsFromJson(cli.files[idx]);
@@ -1922,15 +1937,19 @@ int main(int argc, char* argv[])
         }
         if (parts.empty())
             throw std::runtime_error("no parts loaded");
+        spdlog::info("Loaded {} part instances", parts.size());
 
         // ─── Предрасчёт поворотов ────────────────────────────────────────────
+        spdlog::info("Precomputing orientations...");
         const auto all_orients = makeOrient(parts, cli.rot);
 
         // Precompute NFP cache using GPU where possible
+        spdlog::info("Precomputing NFP cache...");
         precomputeNFPGPU(all_orients, sharedNFP);
 
         // ─── Greedy‑итерации (параллельно) ───────────────────────────────────
         const int total_iter = std::max(1, cli.iter);
+        spdlog::info("Starting greedy iterations: {}", total_iter);
         std::vector<std::vector<Place>> greedyLayouts(total_iter);
         std::vector<double>                greedyArea(total_iter, 1e100);
 
@@ -1958,9 +1977,10 @@ int main(int argc, char* argv[])
         const auto& seedLayout = greedyLayouts[bestGreedyIdx];
         double bestGreedyArea  = greedyArea[bestGreedyIdx];
         if(gVerbose)
-            std::cerr << "[GREEDY] best area " << bestGreedyArea << " mm² (iter " << bestGreedyIdx << ")\n";
+            spdlog::info("Greedy best area {} mm² (iter {})", bestGreedyArea, bestGreedyIdx);
 
         // ─── Genetic‑улучшение ───────────────────────────────────────────────
+        spdlog::info("Starting genetic optimisation (gen={}, pop={})", cli.generations, cli.pop_size);
         auto gaLayout = genetic_nesting(parts, all_orients,
                                         cli.W, cli.H, cli.grid,
                                         sharedNFP, &cli,
@@ -1971,7 +1991,7 @@ int main(int argc, char* argv[])
             gaLayout = local_search(gaLayout, parts, all_orients, cli.W, cli.H, cli.grid, cli.polish);
         double gaArea = computeArea(gaLayout, parts);
         if(gVerbose)
-            std::cerr << "[GA]    final area " << gaArea << " mm²\n";
+            spdlog::info("GA final area {} mm²", gaArea);
 
         // ─── Выбор окончательного расклада ───────────────────────────────────
         auto bestLayout = (gaArea < bestGreedyArea ? gaLayout : seedLayout);
@@ -1979,6 +1999,7 @@ int main(int argc, char* argv[])
             bestLayout = fillGaps(bestLayout, parts, all_orients, cli.W, cli.H, cli.grid);
 
         // ─── Экспорт результатов ─────────────────────────────────────────────
+        spdlog::info("Exporting results to {} and {}", cli.out, cli.dxf);
         std::ofstream csv(cli.out);
         LayoutStats st = computeStats(bestLayout, parts);
         double fill = st.placedArea/(cli.W*cli.H)*100.0;
@@ -1993,7 +2014,7 @@ int main(int argc, char* argv[])
                   << "  ->  " << cli.out << "\n";
         ExportPlacedToDXF(cli.dxf, parts, bestLayout, cli.W, cli.H);
         ExportPlacedToSVG("layout.svg", parts, bestLayout, cli.W, cli.H);
-        std::cout << "DXF exported to " << cli.dxf << "\n";
+        spdlog::info("DXF exported to {}", cli.dxf);
         return 0;
     }
     catch (const std::exception& e) {

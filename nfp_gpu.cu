@@ -55,6 +55,10 @@ void minkowskiKernelLauncher(const long long* ax,const long long* ay,
                              const long long* bx,const long long* by,
                              const GPUPair* pairs,int pairCount,
                              long long* outx,long long* outy){
+    if(pairCount <= 0){
+        fprintf(stderr, "[WARN] minkowskiKernelLauncher called with pairCount=%d\n", pairCount);
+        return;
+    }
     FATAL_KERNEL_NULL(ax); FATAL_KERNEL_NULL(ay); FATAL_KERNEL_NULL(bx);
     FATAL_KERNEL_NULL(by); FATAL_KERNEL_NULL(pairs); FATAL_KERNEL_NULL(outx);
     FATAL_KERNEL_NULL(outy);

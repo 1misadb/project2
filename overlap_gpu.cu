@@ -258,7 +258,11 @@ extern "C" {
 
 void overlapKernelLauncher(const long long* d_xs,const long long* d_ys,
                            const GPUPath* d_paths,GPUShape d_cand,
-                           const GPUShape* d_shapes,int n, const size_t* d_offset, int* d_out){
+                           const GPUShape* d_shapes,int n, int* d_out){
+    if(n <= 0){
+        fprintf(stderr, "[WARN] overlapKernelLauncher called with n=%d\n", n);
+        return;
+    }
     // bring shapes and paths back to host to compute prefix sums
     printf("[launcher] d_xs=%p d_ys=%p d_paths=%p d_shapes=%p d_out=%p n=%d\n",
            d_xs, d_ys, d_paths, d_shapes, d_out, n);

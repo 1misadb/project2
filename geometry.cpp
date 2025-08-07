@@ -41,6 +41,7 @@
         }                                                                   \
     } while(0)
 #endif
+#include <spdlog/spdlog.h>
 #include <limits>
 #include <algorithm>
 #include <numeric>
@@ -179,12 +180,19 @@ bool cuda_available(){
 std::vector<bool> overlapBatchGPU(const Paths64& cand,
                                   const std::vector<Paths64>& others){
 #ifdef USE_CUDA
-    if(others.empty()) return {}; // early exit to avoid zero-byte allocations
+    if(others.empty()) {
+        spdlog::debug("overlapBatchGPU: no shapes to check");
+        return {};
+    }
     if(!cuda_available()){ // fallback
+        spdlog::debug("overlapBatchGPU: CUDA unavailable, using CPU path");
         std::vector<bool> r(others.size());
         for(size_t i=0;i<others.size();++i) r[i]=overlap(cand, others[i]);
         return r;
     }
+
+    spdlog::debug("overlapBatchGPU: cand paths={} others={} total_shapes={}",
+                  cand.size(), others.size(), others.size()+1);
 
     // Flatten all coordinates and path metadata into contiguous arrays
     std::vector<long long> xs,ys; xs.reserve(1024); ys.reserve(1024);
@@ -325,11 +333,13 @@ std::vector<Paths64> minkowskiBatchGPU(const std::vector<Path64>& A,
                                        const std::vector<Path64>& B){
 #ifdef USE_CUDA
     if(!cuda_available()){
+        spdlog::debug("minkowskiBatchGPU: CUDA unavailable, using CPU path");
         std::vector<Paths64> out(A.size());
         for(size_t i=0;i<A.size();++i) out[i]=MinkowskiSum(A[i], B[i], true);
         return out;
     }
     size_t pairCount = A.size();
+    spdlog::debug("minkowskiBatchGPU: pairCount={}", pairCount);
     std::vector<long long> ax, ay, bx, by;
     std::vector<GPUPath> ainfo(pairCount), binfo(pairCount);
     for(size_t i=0;i<pairCount;++i){

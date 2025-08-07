@@ -309,10 +309,10 @@ void overlapKernelLauncher(const long long* d_xs,const long long* d_ys,
 
     // device memory for prefix sums
     size_t* d_off = nullptr;
-    CUDA_CHECK(cudaMalloc(&d_off, (n+1)*sizeof(size_t))); // <FIX offsets>
+    CUDA_CHECK(cudaMalloc(&d_off, (n+1)*sizeof(size_t)));
     CHECK_ALLOC(d_off);
+    FATAL_KERNEL_NULL(d_off);
     printf("[malloc] d_off=%p bytes=%zu\n", d_off, (n+1)*sizeof(size_t));
-    CHECK_PTR(d_off);
     CUDA_CHECK(cudaMemcpy(d_off, h_off.data(), (n+1)*sizeof(size_t),
                           cudaMemcpyHostToDevice));
     printf("[memcpy] host->dev d_off=%p from=%p bytes=%zu\n",
@@ -337,6 +337,7 @@ void overlapKernelLauncher(const long long* d_xs,const long long* d_ys,
     printf("[memset] d_out=%p bytes=%zu\n", d_out, n*sizeof(int));
     CHECK_PTR(d_out);
     CUDA_CHECK(cudaMemset(d_out, 0, n*sizeof(int)));
+    FATAL_KERNEL_NULL(d_out);
     std::vector<int> zeroCheck(n, -1);
     CHECK_PTR(d_out);
     CUDA_CHECK(cudaMemcpy(zeroCheck.data(), d_out, n*sizeof(int), cudaMemcpyDeviceToHost));
@@ -345,10 +346,10 @@ void overlapKernelLauncher(const long long* d_xs,const long long* d_ys,
         ASSERT_MSG(zeroCheck[i] == 0, "memset failed");
     }
 
-    int t = 256;
-    int b = (total + t - 1) / t;
-    ASSERT_MSG(t > 0 && b > 0, "invalid launch config");
-    printf("[launch edge] blocks=%d threads=%d total=%zu\n", b, t, total);
+    constexpr int THREADS_EDGE = 256;
+    int b = (total + THREADS_EDGE - 1) / THREADS_EDGE;
+    ASSERT_MSG(THREADS_EDGE > 0 && b > 0, "invalid launch config");
+    printf("[launch edge] blocks=%d threads=%d total=%zu\n", b, THREADS_EDGE, total);
     printf("[launch edge] d_off=%p d_out=%p\n", d_off, d_out);
     FATAL_KERNEL_NULL(d_xs);
     FATAL_KERNEL_NULL(d_ys);
@@ -356,7 +357,7 @@ void overlapKernelLauncher(const long long* d_xs,const long long* d_ys,
     FATAL_KERNEL_NULL(d_shapes);
     FATAL_KERNEL_NULL(d_off);
     FATAL_KERNEL_NULL(d_out);
-    overlapEdgesKernel<<<b,t>>>(d_xs,d_ys,d_paths,d_cand,d_shapes,n,d_off,d_out);
+    overlapEdgesKernel<<<b,THREADS_EDGE>>>(d_xs,d_ys,d_paths,d_cand,d_shapes,n,d_off,d_out);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 
@@ -366,15 +367,15 @@ void overlapKernelLauncher(const long long* d_xs,const long long* d_ys,
     for(int i=0;i<n && i<DEBUG_LIMIT; ++i)
         printf("[after edge] i=%d val=%d\n", i, afterEdge[i]);
 
-    int t2 = 128;
-    int b2 = (n + t2 - 1) / t2;
-    printf("[launch inside] blocks=%d threads=%d n=%d\n", b2, t2, n);
+    constexpr int THREADS_INSIDE = 128;
+    int b2 = (n + THREADS_INSIDE - 1) / THREADS_INSIDE;
+    printf("[launch inside] blocks=%d threads=%d n=%d\n", b2, THREADS_INSIDE, n);
     FATAL_KERNEL_NULL(d_xs);
     FATAL_KERNEL_NULL(d_ys);
     FATAL_KERNEL_NULL(d_paths);
     FATAL_KERNEL_NULL(d_shapes);
     FATAL_KERNEL_NULL(d_out);
-    overlapInsideKernel<<<b2,t2>>>(d_xs,d_ys,d_paths,d_cand,d_shapes,n,d_out);
+    overlapInsideKernel<<<b2,THREADS_INSIDE>>>(d_xs,d_ys,d_paths,d_cand,d_shapes,n,d_out);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 

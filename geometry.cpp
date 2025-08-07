@@ -179,16 +179,18 @@ bool cuda_available(){
 std::vector<bool> overlapBatchGPU(const Paths64& cand,
                                   const std::vector<Paths64>& others){
 #ifdef USE_CUDA
-    if(others.empty()) return {}; // <FIX offsets>
+    if(others.empty()) return {}; // early exit to avoid zero-byte allocations
     if(!cuda_available()){ // fallback
         std::vector<bool> r(others.size());
         for(size_t i=0;i<others.size();++i) r[i]=overlap(cand, others[i]);
         return r;
     }
+
+    // Flatten all coordinates and path metadata into contiguous arrays
     std::vector<long long> xs,ys; xs.reserve(1024); ys.reserve(1024);
     size_t totalPathCount = cand.size();
     for(const auto& sh:others) totalPathCount += sh.size();
-    std::vector<GPUPath> paths; paths.reserve(totalPathCount); // <FIX offsets>
+    std::vector<GPUPath> paths; paths.reserve(totalPathCount);
     GPUShape candShape{(int)paths.size(), (int)cand.size()};
     for(const auto& p:cand){
         GPUPath gp{(int)xs.size(), (int)p.size()};
@@ -205,47 +207,62 @@ std::vector<bool> overlapBatchGPU(const Paths64& cand,
         }
         shapes.push_back(s);
     }
-    long long* d_xs; long long* d_ys; GPUPath* d_paths; GPUShape* d_shapes; int* d_out;
-    size_t pts_sz=xs.size()*sizeof(long long);
-    CUDA_CHECK(cudaMalloc(&d_xs,pts_sz)); CHECK_ALLOC(d_xs);
-    CUDA_CHECK(cudaMalloc(&d_ys,pts_sz)); CHECK_ALLOC(d_ys);
-    printf("[gpu alloc] d_xs=%p d_ys=%p pts_sz=%zu\n", d_xs, d_ys, pts_sz);
-    CHECK_PTR(d_xs);
-    CUDA_CHECK(cudaMemcpy(d_xs,xs.data(),pts_sz,cudaMemcpyHostToDevice));
-    CHECK_PTR(d_ys);
-    CUDA_CHECK(cudaMemcpy(d_ys,ys.data(),pts_sz,cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMalloc(&d_paths,paths.size()*sizeof(GPUPath))); CHECK_ALLOC(d_paths);
-    CHECK_PTR(d_paths);
-    CUDA_CHECK(cudaMemcpy(d_paths,paths.data(),paths.size()*sizeof(GPUPath),cudaMemcpyHostToDevice));
-    printf("[gpu alloc] d_paths=%p count=%zu\n", d_paths, paths.size());
-    CUDA_CHECK(cudaMalloc(&d_shapes,shapes.size()*sizeof(GPUShape))); CHECK_ALLOC(d_shapes);
-    CHECK_PTR(d_shapes);
-    CUDA_CHECK(cudaMemcpy(d_shapes,shapes.data(),shapes.size()*sizeof(GPUShape),cudaMemcpyHostToDevice));
-    printf("[gpu alloc] d_shapes=%p count=%zu\n", d_shapes, shapes.size());
-    CUDA_CHECK(cudaMalloc(&d_out,shapes.size()*sizeof(int))); CHECK_ALLOC(d_out);
-    printf("[gpu alloc] d_out=%p count=%zu\n", d_out, shapes.size());
-    GPUShape d_cand=candShape; // copy by value
 
-    // <<<--- вот тут вызывем только launcher-обёртку!
-    printf("[call launcher] shapes=%zu cand.size=%d\n", shapes.size(), cand.size());
-    FATAL_KERNEL_NULL(d_xs); FATAL_KERNEL_NULL(d_ys); FATAL_KERNEL_NULL(d_paths);
-    FATAL_KERNEL_NULL(d_shapes); FATAL_KERNEL_NULL(d_out);
-    overlapKernelLauncher(d_xs, d_ys, d_paths, d_cand, d_shapes, (int)shapes.size(), d_out);
+    // --- Thread local device buffers reused across calls ---
+    struct DevBuf {
+        long long* xs = nullptr; size_t xs_cap = 0;
+        long long* ys = nullptr; size_t ys_cap = 0;
+        GPUPath* paths = nullptr; size_t paths_cap = 0;
+        GPUShape* shapes = nullptr; size_t shapes_cap = 0;
+        int* out = nullptr; size_t out_cap = 0;
+        ~DevBuf(){
+            if(xs) cudaFree(xs);
+            if(ys) cudaFree(ys);
+            if(paths) cudaFree(paths);
+            if(shapes) cudaFree(shapes);
+            if(out) cudaFree(out);
+        }
+    };
+    static thread_local DevBuf buf;
+
+    auto ensure = [](auto*& ptr,size_t& cap,size_t bytes){
+        if(bytes==0) return;
+        if(cap < bytes){
+            if(ptr) CUDA_CHECK(cudaFree(ptr));
+            CUDA_CHECK(cudaMalloc(&ptr, bytes));
+            CHECK_ALLOC(ptr);
+            cap = bytes;
+        }
+    };
+
+    size_t pts_sz = xs.size()*sizeof(long long);
+    ensure(buf.xs, buf.xs_cap, pts_sz);
+    ensure(buf.ys, buf.ys_cap, pts_sz);
+    CUDA_CHECK(cudaMemcpy(buf.xs, xs.data(), pts_sz, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(buf.ys, ys.data(), pts_sz, cudaMemcpyHostToDevice));
+
+    ensure(buf.paths, buf.paths_cap, paths.size()*sizeof(GPUPath));
+    CUDA_CHECK(cudaMemcpy(buf.paths, paths.data(), paths.size()*sizeof(GPUPath), cudaMemcpyHostToDevice));
+    ensure(buf.shapes, buf.shapes_cap, shapes.size()*sizeof(GPUShape));
+    CUDA_CHECK(cudaMemcpy(buf.shapes, shapes.data(), shapes.size()*sizeof(GPUShape), cudaMemcpyHostToDevice));
+    ensure(buf.out, buf.out_cap, shapes.size()*sizeof(int));
+
+    GPUShape d_cand = candShape; // copy by value
+
+    // Launch GPU kernels
+    printf("[call launcher] shapes=%zu cand.size=%zu\n", shapes.size(), cand.size());
+    FATAL_KERNEL_NULL(buf.xs); FATAL_KERNEL_NULL(buf.ys); FATAL_KERNEL_NULL(buf.paths);
+    FATAL_KERNEL_NULL(buf.shapes); FATAL_KERNEL_NULL(buf.out);
+    overlapKernelLauncher(buf.xs, buf.ys, buf.paths, d_cand, buf.shapes, (int)shapes.size(), buf.out);
 
     std::vector<int> res_raw(others.size());
-    CHECK_PTR(d_out);
-    CUDA_CHECK(cudaMemcpy(res_raw.data(), d_out, others.size()*sizeof(int), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(res_raw.data(), buf.out, others.size()*sizeof(int), cudaMemcpyDeviceToHost));
     for(size_t i=0;i<others.size() && i<10;++i)
         printf("[host result] i=%zu val=%d\n", i, res_raw[i]);
     std::vector<bool> res(others.size());
-    for (size_t i = 0; i < others.size(); ++i)
-        res[i] = (res_raw[i] != 0);
+    for(size_t i=0;i<others.size();++i) res[i]=(res_raw[i]!=0);
 
-    if(d_xs){ CUDA_CHECK(cudaFree(d_xs)); d_xs=nullptr; }
-    if(d_ys){ CUDA_CHECK(cudaFree(d_ys)); d_ys=nullptr; }
-    if(d_paths){ CUDA_CHECK(cudaFree(d_paths)); d_paths=nullptr; }
-    if(d_shapes){ CUDA_CHECK(cudaFree(d_shapes)); d_shapes=nullptr; }
-    if(d_out){ CUDA_CHECK(cudaFree(d_out)); d_out=nullptr; }
+    // buffers are intentionally kept for reuse
     return res;
 #else
     std::vector<bool> r(others.size());

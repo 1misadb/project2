@@ -162,10 +162,7 @@ bool overlapBVH(const std::vector<BVHNode>& treeA, const Paths64& pa,
 }
 
 #ifdef USE_CUDA
-struct GPUPath { int start; int size; };
-struct GPUShape { int start; int size; };
-extern "C" void overlapKernelLauncher(const long long* d_xs, const long long* d_ys, const GPUPath* d_paths,
-                                      GPUShape d_cand, const GPUShape* d_shapes, int n, int* d_out);
+#include "geometry_gpu.h"
 #endif
 
 bool cuda_available(){

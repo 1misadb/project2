@@ -6,5 +6,6 @@ C:/Users/User/nesting-cli-test/build/CMakeFiles/test_overlap.dir
 C:/Users/User/nesting-cli-test/build/CMakeFiles/test_benchmark.dir
 C:/Users/User/nesting-cli-test/build/CMakeFiles/test_minkowski.dir
 C:/Users/User/nesting-cli-test/build/CMakeFiles/test_offsets.dir
+C:/Users/User/nesting-cli-test/build/CMakeFiles/test_regression.dir
 C:/Users/User/nesting-cli-test/build/CMakeFiles/ALL_BUILD.dir
 C:/Users/User/nesting-cli-test/build/CMakeFiles/ZERO_CHECK.dir

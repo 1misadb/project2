@@ -47,10 +47,14 @@
 #include <numeric>
 #include <cstdint>
 
+// --- внешние символы для Clipper2 (предполагается, что geometry.h тянет clipper3 headers)
+using namespace Clipper2Lib;
+
 double gKerf = 0.0;
 double gGap = 0.0;
 static constexpr double SCALE = 1e4;
 
+// ---- Утилиты перемещения и пересечений ----
 Paths64 movePaths(const Paths64& src, int64_t dx, int64_t dy){
     Paths64 out; out.reserve(src.size());
     for(const auto& path: src){
@@ -177,14 +181,17 @@ bool cuda_available(){
 #endif
 }
 
+// -------------------- FIXED VERSION --------------------
 std::vector<bool> overlapBatchGPU(const Paths64& cand,
                                   const std::vector<Paths64>& others){
 #ifdef USE_CUDA
-    if(others.empty()) {
+    // Нечего проверять — быстрый выход
+    if (others.empty()) {
         spdlog::debug("overlapBatchGPU: no shapes to check");
         return {};
     }
-    if(!cuda_available()){ // fallback
+    // CUDA недоступна — CPU путь
+    if (!cuda_available()){
         spdlog::debug("overlapBatchGPU: CUDA unavailable, using CPU path");
         std::vector<bool> r(others.size());
         for(size_t i=0;i<others.size();++i) r[i]=overlap(cand, others[i]);
@@ -194,17 +201,19 @@ std::vector<bool> overlapBatchGPU(const Paths64& cand,
     spdlog::debug("overlapBatchGPU: cand paths={} others={} total_shapes={}",
                   cand.size(), others.size(), others.size()+1);
 
-    // Flatten all coordinates and path metadata into contiguous arrays
+    // Flatten координаты и метаданные
     std::vector<long long> xs,ys; xs.reserve(1024); ys.reserve(1024);
     size_t totalPathCount = cand.size();
     for(const auto& sh:others) totalPathCount += sh.size();
     std::vector<GPUPath> paths; paths.reserve(totalPathCount);
+
     GPUShape candShape{(int)paths.size(), (int)cand.size()};
     for(const auto& p:cand){
         GPUPath gp{(int)xs.size(), (int)p.size()};
         for(auto pt:p){ xs.push_back(pt.x); ys.push_back(pt.y); }
         paths.push_back(gp);
     }
+
     std::vector<GPUShape> shapes; shapes.reserve(others.size());
     for(const auto& sh:others){
         GPUShape s{(int)paths.size(), (int)sh.size()};
@@ -214,6 +223,12 @@ std::vector<bool> overlapBatchGPU(const Paths64& cand,
             paths.push_back(gp);
         }
         shapes.push_back(s);
+    }
+
+    // FIX: если после подготовки нечего обрабатывать — не запускаем ядро
+    if (shapes.empty()){
+        spdlog::debug("overlapBatchGPU: shapes vector is empty, nothing to process");
+        return std::vector<bool>(others.size(), false);
     }
 
     // --- Thread local device buffers reused across calls ---
@@ -234,7 +249,7 @@ std::vector<bool> overlapBatchGPU(const Paths64& cand,
     static thread_local DevBuf buf;
 
     auto ensure = [](auto*& ptr,size_t& cap,size_t bytes){
-        if(bytes==0) return;
+        if(bytes==0) return;                 // важно: не аллоцировать 0 байт
         if(cap < bytes){
             if(ptr) CUDA_CHECK(cudaFree(ptr));
             CUDA_CHECK(cudaMalloc(&ptr, bytes));
@@ -249,28 +264,39 @@ std::vector<bool> overlapBatchGPU(const Paths64& cand,
     CUDA_CHECK(cudaMemcpy(buf.xs, xs.data(), pts_sz, cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(buf.ys, ys.data(), pts_sz, cudaMemcpyHostToDevice));
 
-    ensure(buf.paths, buf.paths_cap, paths.size()*sizeof(GPUPath));
+    ensure(buf.paths,  buf.paths_cap,  paths.size()*sizeof(GPUPath));
     CUDA_CHECK(cudaMemcpy(buf.paths, paths.data(), paths.size()*sizeof(GPUPath), cudaMemcpyHostToDevice));
     ensure(buf.shapes, buf.shapes_cap, shapes.size()*sizeof(GPUShape));
     CUDA_CHECK(cudaMemcpy(buf.shapes, shapes.data(), shapes.size()*sizeof(GPUShape), cudaMemcpyHostToDevice));
-    ensure(buf.out, buf.out_cap, shapes.size()*sizeof(int));
+    if (shapes.empty()) {
+        spdlog::debug("overlapBatchGPU: shapes empty, nothing to process");
+        return std::vector<bool>(others.size(), false);
+    }
+
+    ensure(buf.out, buf.out_cap, shapes.size() > 0 ? shapes.size()*sizeof(int) : sizeof(int));
+    CHECK_ALLOC(buf.out);
+    
+    ensure(buf.out,    buf.out_cap,    shapes.size()*sizeof(int));
+    CHECK_ALLOC(buf.out); // дополнительная гарантия до запуска ядра
 
     GPUShape d_cand = candShape; // copy by value
 
-    // Launch GPU kernels
+    // Запуск GPU
     printf("[call launcher] shapes=%zu cand.size=%zu\n", shapes.size(), cand.size());
     FATAL_KERNEL_NULL(buf.xs); FATAL_KERNEL_NULL(buf.ys); FATAL_KERNEL_NULL(buf.paths);
     FATAL_KERNEL_NULL(buf.shapes); FATAL_KERNEL_NULL(buf.out);
+
     overlapKernelLauncher(buf.xs, buf.ys, buf.paths, d_cand, buf.shapes, (int)shapes.size(), buf.out);
 
     std::vector<int> res_raw(others.size());
     CUDA_CHECK(cudaMemcpy(res_raw.data(), buf.out, others.size()*sizeof(int), cudaMemcpyDeviceToHost));
     for(size_t i=0;i<others.size() && i<10;++i)
         printf("[host result] i=%zu val=%d\n", i, res_raw[i]);
-    std::vector<bool> res(others.size());
-    for(size_t i=0;i<others.size();++i) res[i]=(res_raw[i]!=0);
 
-    // buffers are intentionally kept for reuse
+    std::vector<bool> res(others.size());
+    for(size_t i=0;i<others.size();++i) res[i] = (res_raw[i]!=0);
+
+    // buffers intentionally kept for reuse
     return res;
 #else
     std::vector<bool> r(others.size());
@@ -278,6 +304,7 @@ std::vector<bool> overlapBatchGPU(const Paths64& cand,
     return r;
 #endif
 }
+// ------------------ /FIXED VERSION ---------------------
 
 // ---- Convex helpers ----
 static long long cross64(const Point64& a, const Point64& b, const Point64& c){

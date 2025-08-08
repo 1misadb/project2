@@ -1,5 +1,4 @@
 # CMake generation dependency list for this directory.
-C:/Program Files/CMake/share/cmake-3.28/Modules/CMakeCInformation.cmake
 C:/Program Files/CMake/share/cmake-3.28/Modules/CMakeCUDAInformation.cmake
 C:/Program Files/CMake/share/cmake-3.28/Modules/CMakeCXXInformation.cmake
 C:/Program Files/CMake/share/cmake-3.28/Modules/CMakeCommonLanguageInclude.cmake
@@ -12,11 +11,10 @@ C:/Program Files/CMake/share/cmake-3.28/Modules/CMakeParseImplicitLinkInfo.cmake
 C:/Program Files/CMake/share/cmake-3.28/Modules/CMakeRCInformation.cmake
 C:/Program Files/CMake/share/cmake-3.28/Modules/CMakeSystemSpecificInformation.cmake
 C:/Program Files/CMake/share/cmake-3.28/Modules/CMakeSystemSpecificInitialize.cmake
-C:/Program Files/CMake/share/cmake-3.28/Modules/CheckCSourceCompiles.cmake
-C:/Program Files/CMake/share/cmake-3.28/Modules/CheckIncludeFile.cmake
+C:/Program Files/CMake/share/cmake-3.28/Modules/CheckCXXSourceCompiles.cmake
+C:/Program Files/CMake/share/cmake-3.28/Modules/CheckIncludeFileCXX.cmake
 C:/Program Files/CMake/share/cmake-3.28/Modules/CheckLibraryExists.cmake
 C:/Program Files/CMake/share/cmake-3.28/Modules/Compiler/CMakeCommonCompilerMacros.cmake
-C:/Program Files/CMake/share/cmake-3.28/Modules/Compiler/MSVC-C.cmake
 C:/Program Files/CMake/share/cmake-3.28/Modules/Compiler/MSVC-CXX.cmake
 C:/Program Files/CMake/share/cmake-3.28/Modules/Compiler/MSVC.cmake
 C:/Program Files/CMake/share/cmake-3.28/Modules/Compiler/NVIDIA-CUDA.cmake
@@ -28,14 +26,12 @@ C:/Program Files/CMake/share/cmake-3.28/Modules/FindPackageMessage.cmake
 C:/Program Files/CMake/share/cmake-3.28/Modules/FindThreads.cmake
 C:/Program Files/CMake/share/cmake-3.28/Modules/Internal/CheckSourceCompiles.cmake
 C:/Program Files/CMake/share/cmake-3.28/Modules/Platform/Windows-Initialize.cmake
-C:/Program Files/CMake/share/cmake-3.28/Modules/Platform/Windows-MSVC-C.cmake
 C:/Program Files/CMake/share/cmake-3.28/Modules/Platform/Windows-MSVC-CXX.cmake
 C:/Program Files/CMake/share/cmake-3.28/Modules/Platform/Windows-MSVC.cmake
 C:/Program Files/CMake/share/cmake-3.28/Modules/Platform/Windows-NVIDIA-CUDA.cmake
 C:/Program Files/CMake/share/cmake-3.28/Modules/Platform/Windows.cmake
 C:/Program Files/CMake/share/cmake-3.28/Modules/Platform/WindowsPaths.cmake
 C:/Users/User/nesting-cli-test/CMakeLists.txt
-C:/Users/User/nesting-cli-test/build/CMakeFiles/3.28.3/CMakeCCompiler.cmake
 C:/Users/User/nesting-cli-test/build/CMakeFiles/3.28.3/CMakeCUDACompiler.cmake
 C:/Users/User/nesting-cli-test/build/CMakeFiles/3.28.3/CMakeCXXCompiler.cmake
 C:/Users/User/nesting-cli-test/build/CMakeFiles/3.28.3/CMakeRCCompiler.cmake

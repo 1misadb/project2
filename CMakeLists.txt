@@ -11,20 +11,25 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "" FORCE)
 endif()
 
-# Enable aggressive warnings for both host and device code.  AddressSanitizer
-# is enabled for host objects.  CUDA receives equivalent flags via
-# --compiler-options.
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Werror -fsanitize=address")
-if(CUDAToolkit_FOUND)
-  set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -G --generate-line-info --device-debug --compiler-options=-Wall,-Wextra,-Werror,-fsanitize=address")
+# --- Platform-specific warnings and sanitizer ---
+if(MSVC)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /W4 /WX")
+else()
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Werror -fsanitize=address")
 endif()
-link_libraries(-fsanitize=address)
+
+if(CUDAToolkit_FOUND)
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -G --generate-line-info --device-debug --compiler-options=-Wall,-Wextra,-Werror,-fsanitize=address")
+endif()
+
+if(NOT MSVC)
+    link_libraries(-fsanitize=address)
+endif()
 
 # --- DEPENDENCIES ---
 find_package(TBB CONFIG REQUIRED)
-
 find_package(CUDAToolkit)
-find_package(OpenMP REQUIRED)  # <-- добавляем OpenMP
+find_package(OpenMP REQUIRED)
 
 # --- CLIPPER3 LIBRARY ---
 add_library(clipper3
@@ -89,7 +94,15 @@ if(CUDAToolkit_FOUND)
     target_link_libraries(test_offsets PRIVATE CUDA::cudart)
 endif()
 
-# Regression driver exercising GPU overlap code on JSON parts
 add_executable(test_regression tests/test_regression_gpu.cpp)
 target_include_directories(test_regression PRIVATE . clipper3)
 target_link_libraries(test_regression PRIVATE geometry TBB::tbb)
+
+# --- MSVC: enable /utf-8 for all non-CUDA targets ---
+if(MSVC)
+    foreach(tgt clipper3 geometry nest test_overlap test_benchmark test_minkowski test_offsets test_regression)
+        if(TARGET ${tgt})
+            target_compile_options(${tgt} PRIVATE /utf-8)
+        endif()
+    endforeach()
+endif()

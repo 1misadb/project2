@@ -1,0 +1,22 @@
+{
+    "configurations": [
+        {
+            "name": "Win32",
+            "includePath": [
+                "${workspaceFolder}/spdlog/include",
+                "${workspaceFolder}/clipper3",
+                "${workspaceFolder}",
+                "C:/Users/User/vcpkg/installed/x64-windows/include",
+                "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9/include"  
+            ],
+            "defines": [
+                "USE_CUDA"
+            ],
+            "compilerPath": "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.39.33519/bin/Hostx64/x64/cl.exe",
+            "cStandard": "c11",
+            "cppStandard": "c++20",
+            "intelliSenseMode": "windows-msvc-x64"
+        }
+    ],
+    "version": 4
+}

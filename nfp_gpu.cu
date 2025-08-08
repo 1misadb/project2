@@ -1,5 +1,6 @@
 #include <cuda_runtime.h>
 #include "geometry.h"
+#include "geometry_gpu.h"
 #include <cstdio>
 #include <cstdlib>
 
@@ -25,7 +26,6 @@
         }                                                                   \
     } while(0)
 
-struct GPUPath { int start; int size; };
 struct GPUPair { GPUPath a; GPUPath b; int start; };
 
 __global__ void minkowskiPairsKernel(const long long* ax,const long long* ay,

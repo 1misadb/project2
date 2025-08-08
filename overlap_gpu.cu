@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <cstdlib>
 #include "geometry.h"
+#include "geometry_gpu.h"
 #define DEBUG_LIMIT 20
 
 #define ASSERT_MSG(cond, msg) do { \
@@ -58,8 +59,6 @@
 // ---------------------------------------------------------------------------------
 // Simple geometry structures used on GPU
 // ---------------------------------------------------------------------------------
-struct GPUPath { int start; int size; };
-struct GPUShape { int start; int size; };
 struct Pt { long long x; long long y; };
 
 // ---------------------------------------------------------------------------------
